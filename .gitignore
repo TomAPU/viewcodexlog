@@ -1,0 +1,14 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Local tooling artifacts
+.DS_Store
+*.log
