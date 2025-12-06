@@ -30,7 +30,8 @@ class Entry:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render Codex JSONL logs as HTML.")
+    parser = argparse.ArgumentParser(
+        description="Render Codex JSONL logs as HTML.")
     parser.add_argument(
         "-l",
         "--log",
@@ -146,7 +147,8 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
         args = payload.get("arguments") or ""
         call_id = payload.get("call_id", "n/a")
         parsed_args = try_parse_json(args)
-        plan_html = render_plan_board(parsed_args) if name == "update_plan" else None
+        plan_html = render_plan_board(
+            parsed_args) if name == "update_plan" else None
         args_html = ""
         if parsed_args is not None:
             args_html = render_structured_data(parsed_args)
@@ -193,7 +195,7 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
         summary = payload.get("summary") or []
         if summary:
             summary_html = "<ul>" + "".join(
-                f"<li>{html.escape(item)}</li>" for item in summary
+                f"<li>{html.escape(str(item))}</li>" for item in summary
             ) + "</ul>"
         else:
             summary_html = "<em>No public summary (content encrypted)</em>"
@@ -318,7 +320,8 @@ def render_structured_data(data: object) -> str:
         )
         return f'<table class="kv-table">{rows}</table>'
     if isinstance(data, list):
-        items = "".join(f"<li>{render_structured_data(item)}</li>" for item in data)
+        items = "".join(
+            f"<li>{render_structured_data(item)}</li>" for item in data)
         return f'<ul class="list-nested">{items}</ul>'
     return render_scalar(data)
 
@@ -334,7 +337,8 @@ def render_scalar(value: object) -> str:
 def render_code_block(node: dict) -> str:
     code = node.get("code") or node.get("content") or node.get("text") or ""
     code = str(code)
-    language = node.get("language") or node.get("lang") or node.get("programming_language")
+    language = node.get("language") or node.get(
+        "lang") or node.get("programming_language")
     header = f'<div class="code-lang">{html.escape(language)}</div>' if language else ""
     return f'<div class="code-block">{header}<pre><code>{html.escape(code)}</code></pre></div>'
 
