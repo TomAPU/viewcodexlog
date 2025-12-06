@@ -195,7 +195,7 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
         summary = payload.get("summary") or []
         if summary:
             summary_html = "<ul>" + "".join(
-                f"<li>{html.escape(str(item))}</li>" for item in summary
+                f"<li>{render_reasoning_summary_item(item)}</li>" for item in summary
             ) + "</ul>"
         else:
             summary_html = "<em>No public summary (content encrypted)</em>"
@@ -279,6 +279,18 @@ def extract_text_chunks(content_items: Iterable[dict]) -> List[str]:
 def format_text_block(text: str) -> str:
     escaped = html.escape(text)
     return escaped.replace("\n", "<br>")
+
+
+def render_reasoning_summary_item(item: object) -> str:
+    if isinstance(item, dict):
+        kind = item.get("type")
+        text = item.get("text")
+        if isinstance(kind, str) and text is not None:
+            text_value = text if isinstance(text, str) else str(text)
+            text_html = format_text_block(text_value)
+            kind_html = html.escape(kind)
+            return f"<strong>{kind_html}</strong>: {text_html}"
+    return html.escape(str(item))
 
 
 def format_pre(text: str) -> str:
