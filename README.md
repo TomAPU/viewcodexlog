@@ -10,7 +10,8 @@
 
 ```bash
 python viewcodexlog.py -l kernelmcp-cleaned-experiments\kctf-poc-gen\cases -p 8123
-python viewcodexlog.py -l kctf\mass-run-medium -p 8123
+# git clone git@github.com:TomAPU/kernelmcpfullresut.git
+python viewcodexlog.py -l kernelmcpfullresut\kctf\mass-run-medium -p 8123
 ```
 
 Then open `http://127.0.0.1:8123` in your browser. Use the “Hide meta blocks” button if you want to focus on user/assistant/tool turns.
