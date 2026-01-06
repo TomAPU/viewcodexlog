@@ -1,20 +1,16 @@
 # View Codex Log
 
+**Batch Viewer for Codex CLI JSONL Logs**
+
 > This entire project was crafted by Codex, and its functionality has been thoroughly cat-tested. 🐾
 
 `viewcodexlog.py` is a tiny Python web app that renders Codex CLI JSONL traces as a readable conversation timeline. Point it at any `*.jsonl` log and it spins up a local HTTP server with an interactive HTML view.
 
-## Features
-
-- **Conversation cards** for every `response_item`, `event_msg`, `session_meta`, and `turn_context`.
-- **Smart formatting** for function calls/outputs, including tables for structured data, code blocks for `{"type":"code"}` nodes, and a custom board for `update_plan`.
-- **Collapsible metadata** so heavy JSON blobs (turn context, token usage, reasoning notes) stay out of the way. A header toggle hides/shows them all at once.
-- **Works offline**: no dependencies beyond the Python standard library.
-
 ## Quick start
 
 ```bash
-python3 viewcodexlog.py -l kctf_poc_gen_success.jsonl -p 8123
+python viewcodexlog.py -l kernelmcp-cleaned-experiments\kctf-poc-gen\cases -p 8123
+python viewcodexlog.py -l kctf\mass-run-medium -p 8123
 ```
 
 Then open `http://127.0.0.1:8123` in your browser. Use the “Hide meta blocks” button if you want to focus on user/assistant/tool turns.
@@ -23,18 +19,5 @@ Then open `http://127.0.0.1:8123` in your browser. Use the “Hide meta blocks�
 
 | Flag | Description |
 | ---- | ----------- |
-| `-l, --log` | Path to the JSONL log (required). |
+| `-l, --log` | Path to the folder containing (hash/sessions/yyyy/mm/dd/rollout*.jsonl) JSONL logs (required). |
 | `-p, --port` | Port for the HTTP server (default `8000`). |
-
-## Development
-
-- Python 3.8+ recommended (uses only stdlib).
-- No external dependencies; running `python3 -m py_compile viewcodexlog.py` is enough for a quick lint.
-- The script currently loads the entire log into memory. For very large logs consider streaming/pagination if needed.
-
-Contributions are welcome—file an issue or PR once this lands on GitHub!
-
-## 2025-12-09 update
-
-- Added a secondary `/run_code_log.html` view that lazily extracts every `mcp__kernelmcp__vm_compile_c_and_upload` call into a temporary git history so you can browse each upload plus its diffs without touching the main page load.
-- Diff blocks inside that view now show GitHub-style coloring for added/removed/context lines so it's easy to scan what changed between uploads.

@@ -3,7 +3,7 @@
 Simple viewer for Codex CLI JSONL logs.
 
 Usage:
-    python3 viewcodexlog.py -l <logfile.jsonl> -p <port>
+    python3 viewcodexlog.py -p <port>
 """
 
 from __future__ import annotations
@@ -11,14 +11,13 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import os
-import subprocess
 import sys
-import tempfile
+from datetime import datetime
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Iterable, List, Optional
+from urllib.parse import parse_qs, quote, urlparse
 
 
 @dataclass
@@ -32,33 +31,22 @@ class Entry:
     extra_classes: List[str] = field(default_factory=list)
 
 
-@dataclass
-class RunCodeUpload:
-    index: int
-    timestamp: str
-    lineno: int
-    code: str
-    flags: str
-
-
-TARGET_RUN_CODE_FN = "mcp__kernelmcp__vm_compile_c_and_upload"
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Render Codex JSONL logs as HTML.")
-    parser.add_argument(
-        "-l",
-        "--log",
-        required=True,
-        help="Path to the JSONL conversation log.",
-    )
+    parser = argparse.ArgumentParser(description="Render Codex JSONL logs as HTML.")
     parser.add_argument(
         "-p",
         "--port",
         type=int,
         default=8000,
         help="Port to bind the HTTP server (default: 8000).",
+    )
+    parser.add_argument(
+        "-l",
+        "--log",
+        help=(
+            "Optional base directory. If set, collect JSONL under <dir>/*/sessions/YYYY/MM/DD/*.jsonl; "
+            "otherwise use current directory (non-recursive)."
+        ),
     )
     return parser.parse_args()
 
@@ -191,7 +179,15 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
         output = payload.get("output")
         parsed_output = try_parse_json(output)
         if parsed_output is not None:
-            output_html = render_structured_data(parsed_output)
+            if (
+                isinstance(parsed_output, dict)
+                and isinstance(parsed_output.get("result"), list)
+                and len(parsed_output["result"]) > 10
+            ):
+                rendered = render_structured_data(parsed_output)
+                output_html = f'<div class="result-scroll">{rendered}</div>'
+            else:
+                output_html = render_structured_data(parsed_output)
         elif output is None:
             output_html = "<em>no output</em>"
         else:
@@ -413,298 +409,49 @@ def render_diff(diff_text: str) -> str:
     return f'<pre class="diff-block">{"".join(formatted)}</pre>'
 
 
-BASE_CSS = """
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
-      background: #f5f6f8;
-      color: #1c1c1c;
-    }
-    header {
-      padding: 1rem 2rem;
-      background: #232f3e;
-      color: white;
-    }
-    .header-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .header-actions {
-      display: flex;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-    }
-    .container {
-      padding: 1rem 2rem 3rem;
-    }
-    .entry {
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      padding: 1rem;
-      margin-bottom: 1rem;
-      border-left: 4px solid transparent;
-    }
-    .entry header {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      margin-bottom: 0.5rem;
-      padding: 0;
-      background: none;
-      color: inherit;
-    }
-    .entry-system { border-color: #6c757d; }
-    .entry-user { border-color: #007bff; }
-    .entry-assistant { border-color: #6f42c1; }
-    .entry-tool { border-color: #e36209; }
-    .entry-metric { border-color: #198754; }
-    .entry-error { border-color: #dc3545; }
-    pre {
-      background: #1e1e1e;
-      color: #f8f8f2;
-      padding: 0.75rem;
-      overflow-x: auto;
-      border-radius: 6px;
-    }
-    details summary {
-      cursor: pointer;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-    hr {
-      border: none;
-      border-top: 1px solid #e5e5e5;
-      margin: 0.75rem 0;
-    }
-    .kv-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 0.5rem 0;
-    }
-    .kv-table th,
-    .kv-table td {
-      padding: 0.35rem 0.5rem;
-      border-bottom: 1px solid #e5e5e5;
-      vertical-align: top;
-    }
-    .kv-table th {
-      text-align: left;
-      width: 180px;
-      color: #495057;
-      background: #f8f9fa;
-    }
-    .list-nested {
-      margin: 0.25rem 0 0.25rem 1.25rem;
-      padding-left: 1rem;
-    }
-    .list-nested li {
-      margin-bottom: 0.35rem;
-    }
-    .plan-board {
-      background: #f8f9fb;
-      border-radius: 6px;
-      padding: 0.75rem;
-      margin: 0.5rem 0;
-      border: 1px solid #e3e7ed;
-    }
-    .plan-board h4 {
-      margin: 0 0 0.5rem;
-    }
-    .plan-board ol {
-      margin: 0;
-      padding-left: 1.25rem;
-    }
-    .status-chip {
-      display: inline-block;
-      padding: 0.1rem 0.6rem;
-      border-radius: 999px;
-      font-size: 0.8rem;
-      margin-right: 0.5rem;
-      text-transform: capitalize;
-    }
-    .status-chip.status-in_progress {
-      background: #fff3cd;
-      color: #7c5b07;
-    }
-    .status-chip.status-pending {
-      background: #e9ecef;
-      color: #495057;
-    }
-    .status-chip.status-completed {
-      background: #d1e7dd;
-      color: #0f5132;
-    }
-    .status-chip.status-error {
-      background: #f8d7da;
-      color: #842029;
-    }
-    .code-block {
-      margin: 0.5rem 0;
-    }
-    .code-lang {
-      font-size: 0.78rem;
-      color: #6c757d;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
-    }
-    .meta-toggle,
-    .nav-button {
-      border: none;
-      background: #ffc107;
-      color: #1c1c1c;
-      padding: 0.5rem 1rem;
-      border-radius: 999px;
-      cursor: pointer;
-      font-weight: 600;
-      transition: background 0.2s ease;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .nav-button {
-      background: #0d6efd;
-      color: white;
-    }
-    .nav-button.secondary {
-      background: #6c757d;
-    }
-    .meta-toggle:hover {
-      background: #ffca2c;
-    }
-    .nav-button:hover {
-      background: #0b5ed7;
-    }
-    body.meta-hidden .entry.collapsible-meta {
-      display: none;
-    }
-    .panel {
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      padding: 1rem;
-      margin-bottom: 1rem;
-    }
-    .panel h2 {
-      margin-top: 0;
-    }
-    .uploads-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .uploads-table th,
-    .uploads-table td {
-      border-bottom: 1px solid #e5e5e5;
-      padding: 0.35rem 0.5rem;
-      text-align: left;
-    }
-    .uploads-table th {
-      background: #f8f9fa;
-    }
-    .diff-card {
-      background: white;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      border-left: 4px solid #0d6efd;
-    }
-    .diff-card h3 {
-      margin-top: 0;
-      margin-bottom: 0.5rem;
-    }
-    .diff-card pre {
-      margin: 0;
-    }
-    .error-banner {
-      background: #f8d7da;
-      color: #842029;
-      padding: 0.75rem 1rem;
-      border-radius: 6px;
-    }
-    .diff-block {
-      background: #0b0d12;
-      color: #e6edf3;
-      padding: 0.75rem;
-      border-radius: 6px;
-      font-family: "SFMono-Regular", Consolas, Menlo, monospace;
-      font-size: 0.9rem;
-      line-height: 1.35;
-      overflow-x: auto;
-      white-space: pre;
-    }
-    .diff-block span {
-      display: block;
-      padding: 0 0.35rem;
-      border-radius: 4px;
-    }
-    .diff-add {
-      background: rgba(46, 160, 67, 0.25);
-      color: #7ee787;
-    }
-    .diff-del {
-      background: rgba(248, 81, 73, 0.25);
-      color: #ffaba8;
-    }
-    .diff-hunk {
-      color: #79c0ff;
-    }
-    .diff-file {
-      color: #ffa657;
-    }
-    .diff-context {
-      color: #c9d1d9;
-    }
-"""
-
-
 def build_page(entries: List[Entry], source_path: Path) -> str:
     cards_html = "\n".join(entry_to_html(entry) for entry in entries)
     total = len(entries)
+    featured = entry_to_html(entries[-1]) if entries else ""
+    featured_block = (
+        f'<section class="featured-entry">{featured}<div class="divider-thin"></div></section>'
+        if featured
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Conversation Viewer</title>
-  <style>
-{BASE_CSS}
-  </style>
+    <meta charset="utf-8">
+    <title>Conversation Viewer</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div class="header-top">
-      <h1>Conversation Viewer</h1>
-      <div class="header-actions">
-        <a href="/run_code_log.html" class="nav-button">View run_code uploads</a>
-        <button id="toggle-meta" class="meta-toggle" type="button">Hide meta blocks</button>
-      </div>
+    <header>
+        <div class="header-top">
+            <h1><a class="logo-link" href="/index.html">Conversation Viewer</a></h1>
+            <div class="header-actions">
+                <a class="home-button" href="/index.html">Back to Home</a>
+            </div>
+        </div>
+        <p>Source: {html.escape(str(source_path))} · {total} entries</p>
+    </header>
+    <div class="container">
+        {featured_block}
+        {cards_html}
     </div>
-    <p>Source: {html.escape(str(source_path))} · {total} entries</p>
-  </header>
-  <div class="container">
-    {cards_html}
-  </div>
-  <script>
-    (() => {{
-      const btn = document.getElementById("toggle-meta");
-      if (!btn) return;
-      let hidden = false;
-      const update = () => {{
-        document.body.classList.toggle("meta-hidden", hidden);
-        btn.textContent = hidden ? "Show meta blocks" : "Hide meta blocks";
-      }};
-      btn.addEventListener("click", () => {{
-        hidden = !hidden;
-        update();
-      }});
-      update();
-    }})();
-  </script>
+    <button id="back-to-top" class="back-to-top" aria-label="Back to top">↑</button>
+    <script>
+      (() => {{
+        const btn = document.getElementById('back-to-top');
+        if (!btn) return;
+        const toggle = () => {{
+          btn.classList.toggle('visible', window.scrollY > 240);
+        }};
+        window.addEventListener('scroll', toggle);
+        btn.addEventListener('click', () => window.scrollTo({{ top: 0, behavior: 'smooth' }}));
+        toggle();
+      }})();
+    </script>
 </body>
 </html>
 """
@@ -722,214 +469,164 @@ def entry_to_html(entry: Entry) -> str:
         f"</article>"
     )
 
+def scan_jsonl_files(base_dir: Path) -> List[Path]:
+    files = []
+    for item in base_dir.iterdir():
+        if item.is_file() and item.suffix.lower() == ".jsonl":
+            files.append(item)
+    return sorted(files)
 
-def build_run_code_page(source_path: Path) -> str:
-    uploads = extract_run_code_uploads(source_path)
-    total = len(uploads)
-    summary_section = render_upload_summary(uploads)
-    diffs_section = ""
-    if uploads:
-        try:
-            diffs = build_upload_git_history(uploads)
-        except RuntimeError as exc:
-            diffs_section = (
-                "<section class='panel'>"
-                "<h2>Commit diffs</h2>"
-                f"<div class='error-banner'>Failed to build git history: {html.escape(str(exc))}</div>"
-                "</section>"
-            )
-        else:
-            diff_cards = "".join(
-                f"<div class='diff-card'><h3>{html.escape(label)}</h3>{render_diff(diff)}</div>"
-                for label, diff in diffs
-            )
-            diffs_section = f"<section class='panel'><h2>Commit diffs</h2>{diff_cards}</section>"
-    else:
-        diffs_section = ""
+
+def scan_sessions_jsonl(base_dir: Path) -> List[Path]:
+    # Pattern: <base>/<case>/sessions/YYYY/MM/DD/*.jsonl
+    pattern = "*/sessions/*/*/*/*.jsonl"
+    return sorted(p for p in base_dir.glob(pattern) if p.is_file())
+
+
+def format_file_info(path: Path) -> tuple[str, str]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return ("n/a", "n/a")
+    size_kb = stat.st_size / 1024
+    size_label = f"{size_kb:.1f} KB" if size_kb >= 0.1 else f"{stat.st_size} B"
+    mtime_label = datetime.fromtimestamp(stat.st_mtime).isoformat(" ", "seconds")
+    return (size_label, mtime_label)
+
+
+def build_index_page(base_dir: Path, files: List[Path], default_log: Path) -> str:
+    rows = []
+    for path in files:
+        size_label, mtime_ts = format_file_info(path)
+        name = path.name
+        rel = path.relative_to(base_dir).as_posix()
+        view_href = f"/view.html?file={quote(rel)}"
+        default_badge = "" if path != default_log else "<span class=\"status-chip status-pending\">default</span>"
+        rows.append(
+            "<tr>"
+            f"<td><a href=\"{view_href}\">{html.escape(rel)}</a></td>"
+            f"<td>{size_label}</td>"
+            f"<td>{mtime_ts}</td>"
+            f"<td>{default_badge}</td>"
+            "</tr>"
+        )
+
+    table = (
+        "<table class=\"uploads-table\">"
+        "<thead><tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    ) if rows else "<p>No .jsonl files found in this directory.</p>"
 
     return f"""<!doctype html>
-<html lang="en">
+<html lang=\"en\">
 <head>
-  <meta charset="utf-8">
-  <title>run_code uploads</title>
-  <style>
-{BASE_CSS}
-  </style>
+    <meta charset="utf-8">
+    <title>Log index</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div class="header-top">
-      <h1>run_code uploads</h1>
-      <div class="header-actions">
-        <a href="/index.html" class="nav-button secondary">Back to entries</a>
-      </div>
+    <header>
+        <div class=\"header-top\">
+            <h1><a class=\"logo-link\" href=\"/index.html\">Log index</a></h1>
+            <div class=\"header-actions\">
+                <a class=\"home-button\" href=\"/index.html\">Back to Home</a>
+            </div>
+        </div>
+        <p>Root: {html.escape(str(base_dir))}</p>
+    </header>
+    <div class=\"container\">
+        <section class=\"panel\">
+            <h2>Available JSONL logs</h2>
+            {table}
+        </section>
     </div>
-    <p>Source: {html.escape(str(source_path))} · {total} uploads</p>
-  </header>
-  <div class="container">
-    {summary_section}
-    {diffs_section}
-  </div>
+    <button id=\"back-to-top\" class=\"back-to-top\" aria-label=\"Back to top\">↑</button>
+    <script>
+      (() => {{
+        const btn = document.getElementById('back-to-top');
+        if (!btn) return;
+        const toggle = () => {{
+          btn.classList.toggle('visible', window.scrollY > 240);
+        }};
+        window.addEventListener('scroll', toggle);
+        btn.addEventListener('click', () => window.scrollTo({{ top: 0, behavior: 'smooth' }}));
+        toggle();
+      }})();
+    </script>
 </body>
 </html>
 """
 
 
-def render_upload_summary(uploads: List[RunCodeUpload]) -> str:
-    if not uploads:
-        return (
-            "<section class='panel'>"
-            "<h2>Captured uploads</h2>"
-            "<p>No calls to mcp__kernelmcp__vm_compile_c_and_upload were found in this log.</p>"
-            "</section>"
-        )
-    rows = []
-    for upload in uploads:
-        code_details = (
-            f"<details><summary>{len(upload.code)} chars</summary>"
-            f"<pre>{html.escape(upload.code)}</pre></details>"
-            if upload.code
-            else "<em>empty</em>"
-        )
-        flags_details = (
-            f"<details><summary>{len(upload.flags)} chars</summary>"
-            f"<pre>{html.escape(upload.flags)}</pre></details>"
-            if upload.flags
-            else "<em>empty</em>"
-        )
-        rows.append(
-            "<tr>"
-            f"<td>{upload.index}</td>"
-            f"<td>{html.escape(upload.timestamp)}</td>"
-            f"<td>line {upload.lineno}</td>"
-            f"<td>{code_details}</td>"
-            f"<td>{flags_details}</td>"
-            "</tr>"
-        )
-    table = (
-        "<table class='uploads-table'>"
-        "<thead><tr><th>#</th><th>Timestamp</th><th>Location</th><th>Code</th><th>Flags</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody>"
-        "</table>"
-    )
-    return f"<section class='panel'><h2>Captured uploads ({len(uploads)})</h2>{table}</section>"
-
-
-def extract_run_code_uploads(source_path: Path) -> List[RunCodeUpload]:
-    uploads: List[RunCodeUpload] = []
-    with source_path.open("r", encoding="utf-8") as handle:
-        for lineno, line in enumerate(handle, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") != "response_item":
-                continue
-            payload = record.get("payload") or {}
-            if payload.get("type") != "function_call":
-                continue
-            if payload.get("name") != TARGET_RUN_CODE_FN:
-                continue
-            args_raw = payload.get("arguments")
-            args = try_parse_json(args_raw)
-            if not isinstance(args, dict):
-                continue
-            code_value = args.get("code", "")
-            code_str = str("" if code_value is None else code_value)
-            flags_value = args.get("flags", "")
-            if isinstance(flags_value, (list, tuple)):
-                flags_str = "\n".join(str(item) for item in flags_value)
-            else:
-                flags_str = "" if flags_value is None else str(flags_value)
-            uploads.append(
-                RunCodeUpload(
-                    index=len(uploads) + 1,
-                    timestamp=record.get("timestamp", "unknown"),
-                    lineno=lineno,
-                    code=code_str,
-                    flags=str(flags_str),
-                )
-            )
-    return uploads
-
-
-def build_upload_git_history(uploads: List[RunCodeUpload]) -> List[tuple[str, str]]:
-    if not uploads:
-        return []
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo = Path(tmpdir)
-        git_env = build_git_env()
-        run_git_command(["init", "-q"], repo, git_env)
-        code_path = repo / "code.c"
-        flags_path = repo / "flags.txt"
-        for upload in uploads:
-            code_path.write_text(upload.code, encoding="utf-8")
-            flags_path.write_text(upload.flags, encoding="utf-8")
-            run_git_command(["add", "code.c", "flags.txt"], repo, git_env)
-            commit_message = f"upload {upload.index}"
-            run_git_command(
-                ["commit", "-m", commit_message, "--allow-empty"],
-                repo,
-                git_env,
-            )
-        revs_output = run_git_command(["rev-list", "--reverse", "HEAD"], repo, git_env)
-        revs = [rev for rev in revs_output.strip().splitlines() if rev]
-        diffs: List[tuple[str, str]] = []
-        for rev, upload in zip(revs, uploads):
-            short = run_git_command(["rev-parse", "--short", rev], repo, git_env).strip()
-            diff = run_git_command(["show", "--stat", "--patch", rev], repo, git_env)
-            label = f"{short} · upload {upload.index}"
-            diffs.append((label, diff))
-        return diffs
-
-
-def build_git_env() -> dict:
-    env = os.environ.copy()
-    env.setdefault("GIT_AUTHOR_NAME", "RunCodeLogger")
-    env.setdefault("GIT_AUTHOR_EMAIL", "run-code@example.com")
-    env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
-    env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
-    return env
-
-
-def run_git_command(args: List[str], cwd: Path, env: dict) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip() or "git command failed"
-        raise RuntimeError(f"git {' '.join(args)}: {stderr}")
-    return result.stdout
+def resolve_log_path(query: dict, base_dir: Path, default_log: Path) -> Optional[Path]:
+    file_values = query.get("file")
+    candidate = file_values[0] if file_values else default_log.relative_to(base_dir).as_posix()
+    target = (base_dir / candidate).resolve()
+    base = base_dir.resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return None
+    if not target.is_file():
+        return None
+    return target
 
 
 def start_server(
     port: int,
-    index_builder: Callable[[], str],
-    run_code_builder: Callable[[], str],
+    base_dir: Path,
+    default_log: Path,
+    style_path: Path,
+    nested_sessions: bool,
 ) -> None:
+    try:
+        css_bytes = style_path.read_bytes()
+    except OSError:
+        css_bytes = b""
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path in {"/", "/index.html"}:
-                body_builder = index_builder
-            elif self.path == "/run_code_log.html":
-                body_builder = run_code_builder
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
+
+            if path == "/style.css":
+                if not css_bytes:
+                    self.send_error(404, "CSS not found")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css; charset=utf-8")
+                self.send_header("Content-Length", str(len(css_bytes)))
+                self.end_headers()
+                self.wfile.write(css_bytes)
+                return
+
+            files = scan_sessions_jsonl(base_dir) if nested_sessions else scan_jsonl_files(base_dir)
+            if not files:
+                self.send_error(404, "No JSONL files found")
+                return
+            current_default = default_log if default_log.exists() else files[0]
+
+            if path in {"/", "/index.html"}:
+                body = build_index_page(base_dir, files, current_default)
+            elif path in {"/view", "/view.html"}:
+                log_path = resolve_log_path(query, base_dir, current_default)
+                if not log_path:
+                    self.send_error(404, "Log file not found")
+                    return
+                entries = load_entries(log_path)
+                body = build_page(entries, log_path)
             else:
                 self.send_error(404, "Not Found")
                 return
-            body = body_builder().encode("utf-8")
+
+            body_bytes = body.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(body_bytes)))
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(body_bytes)
 
         def log_message(self, format: str, *args: object) -> None:
             # Keep stdout clean; use stderr for concise logs.
@@ -942,23 +639,26 @@ def start_server(
 
 def main() -> None:
     args = parse_args()
-    source_path = Path(args.log).expanduser().resolve()
-    if not source_path.exists():
-        print(f"Log file not found: {source_path}", file=sys.stderr)
+    nested = bool(args.log)
+    base_dir = Path(args.log).expanduser().resolve() if args.log else Path.cwd().resolve()
+    candidates = scan_sessions_jsonl(base_dir) if nested else scan_jsonl_files(base_dir)
+    if not candidates:
+        msg = (
+            "No .jsonl files found in current directory." if not nested
+            else "No .jsonl files found under */sessions/YYYY/MM/DD/."
+        )
+        print(msg, file=sys.stderr)
         sys.exit(1)
+    default_log = candidates[0]
 
-    entries = load_entries(source_path)
-    if not entries:
-        print("No entries were parsed from the log.", file=sys.stderr)
-        sys.exit(1)
+    # Parse once to surface malformed logs early, but keep serving the index.
+    try:
+        _ = load_entries(default_log)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to parse default log: {exc}", file=sys.stderr)
 
-    def page_builder() -> str:
-        return build_page(entries, source_path)
-
-    def run_code_builder() -> str:
-        return build_run_code_page(source_path)
-
-    start_server(args.port, page_builder, run_code_builder)
+    style_path = Path(__file__).with_name("style.css")
+    start_server(args.port, base_dir, default_log, style_path, nested)
 
 
 if __name__ == "__main__":
