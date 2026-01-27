@@ -19,12 +19,21 @@ python3 viewcodexlog.py -l kctf_poc_gen_success.jsonl -p 8123
 
 Then open `http://127.0.0.1:8123` in your browser. Use the “Hide meta blocks” button if you want to focus on user/assistant/tool turns.
 
+To generate a static HTML export instead of running a server:
+
+```bash
+python3 viewcodexlog.py -l kctf_poc_gen_success.jsonl -o output.html
+```
+
+This writes a single HTML file (or `index.html` inside the output directory).
+
 ## Command reference
 
 | Flag | Description |
 | ---- | ----------- |
 | `-l, --log` | Path to the JSONL log (required). |
 | `-p, --port` | Port for the HTTP server (default `8000`). |
+| `-o, --output` | Write `index.html` output to this file or directory and exit. |
 
 ## Development
 

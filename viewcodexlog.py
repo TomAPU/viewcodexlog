@@ -4,6 +4,7 @@ Simple viewer for Codex CLI JSONL logs.
 
 Usage:
     python3 viewcodexlog.py -l <logfile.jsonl> -p <port>
+    python3 viewcodexlog.py -l <logfile.jsonl> -o <output.html>
 """
 
 from __future__ import annotations
@@ -64,6 +65,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8000,
         help="Port to bind the HTTP server (default: 8000).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Write HTML output to this file or directory instead of serving.",
     )
     return parser.parse_args()
 
@@ -1422,6 +1428,19 @@ def start_server(
     server.serve_forever()
 
 
+def write_html_output(output_path: Path, index_html: str) -> None:
+    if output_path.suffix.lower() == ".html" and not output_path.is_dir():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(index_html, encoding="utf-8")
+        print(f"Wrote HTML to {output_path}")
+        return
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    index_path = output_path / "index.html"
+    index_path.write_text(index_html, encoding="utf-8")
+    print(f"Wrote HTML to {index_path}")
+
+
 def main() -> None:
     args = parse_args()
     source_path = Path(args.log).expanduser().resolve()
@@ -1436,6 +1455,11 @@ def main() -> None:
 
     def page_builder() -> str:
         return build_page(entries, source_path)
+
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+        write_html_output(output_path, page_builder())
+        return
 
     def run_code_builder() -> str:
         return build_run_code_page(source_path)
