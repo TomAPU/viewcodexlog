@@ -570,15 +570,18 @@ def render_tool_timeline(entries: List[Entry]) -> str:
       const placeEvents = () => {{
         const viewport = scrollBox.clientWidth || window.innerWidth || 1;
         const baseWidth = Math.max(minWidth, viewport, total * pxPerMinute);
-        totalWidth = baseWidth;
+        const inset = 14;
+        let usable = Math.max(0, baseWidth - inset * 2);
+        totalWidth = baseWidth + inset * 2;
         track.innerHTML = "";
         legend.innerHTML = "";
+        axis.innerHTML = "";
 
         const buckets = new Map();
         const seenTools = new Map();
-        let maxX = baseWidth;
+        let maxX = 0;
         cfg.events.forEach((ev) => {{
-          const rawX = Math.max(0, Math.min(baseWidth, (ev.minutes / total) * baseWidth));
+          const rawX = inset + Math.max(0, Math.min(usable, (ev.minutes / total) * usable));
           const bucket = Math.floor(rawX / bucketSize);
           const count = buckets.get(bucket) || 0;
           const columnIdx = Math.floor(count / maxStackPerColumn);
@@ -603,13 +606,27 @@ def render_tool_timeline(entries: List[Entry]) -> str:
           seenTools.set(ev.tool, ev.color);
         }});
 
-        totalWidth = Math.max(maxX + 24, baseWidth);
+        totalWidth = Math.max(totalWidth, maxX + inset + 10);
         track.style.width = `${{totalWidth}}px`;
         axis.style.width = `${{totalWidth}}px`;
 
         const maxCount = buckets.size ? Math.max(...Array.from(buckets.values())) : 0;
         const height = Math.max(50, Math.min(maxStackPerColumn, maxCount || 1) * laneHeight + 24);
         track.style.height = `${{height}}px`;
+
+        const usableTicks = Math.max(0, totalWidth - inset * 2);
+        const interval = cfg.tickInterval || total;
+        for (let m = 0; m <= cfg.totalMinutes + interval * 0.25; m += interval) {{
+          const tick = document.createElement("div");
+          tick.className = "timeline-tick";
+          const px = inset + Math.min(usableTicks, Math.max(0, (m / total) * usableTicks));
+          tick.style.left = `${{px}}px`;
+          if (m === 0) {{
+            tick.classList.add("tick-start");
+          }}
+          tick.textContent = formatTick(m);
+          axis.appendChild(tick);
+        }}
 
         for (const [tool, color] of seenTools.entries()) {{
           const item = document.createElement("div");
