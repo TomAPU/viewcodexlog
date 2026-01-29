@@ -34,6 +34,7 @@ class Entry:
     extra_classes: List[str] = field(default_factory=list)
     anchor_id: Optional[str] = None
     tool_name: Optional[str] = None
+    next_tool_anchor: Optional[str] = None
 
 
 @dataclass
@@ -364,6 +365,19 @@ def color_for_tool(tool_name: str) -> str:
     return f"hsl({hue}, 70%, 55%)"
 
 
+def build_tool_color_map(tool_names: List[str]) -> dict:
+    seen = []
+    colors = {}
+    base_hue = 210
+    golden = 137.508
+    for name in sorted(set(tool_names)):
+        idx = len(seen)
+        hue = (base_hue + idx * golden) % 360
+        colors[name] = f"hsl({int(round(hue))}, 72%, 48%)"
+        seen.append(name)
+    return colors
+
+
 def format_duration_minutes(minutes: float) -> str:
     if minutes < 1:
         return f"{int(round(minutes * 60))}s"
@@ -462,6 +476,9 @@ def render_tool_timeline(entries: List[Entry]) -> str:
             tool_events.append((entry, parse_iso_timestamp(entry.timestamp)))
     if not tool_events:
         return ""
+    color_map = build_tool_color_map(
+        [entry.tool_name for entry, _ in tool_events if entry.tool_name]
+    )
     tool_events.sort(key=lambda item: item[1])
     start_ts = tool_events[0][1]
     end_ts = tool_events[-1][1]
@@ -477,7 +494,7 @@ def render_tool_timeline(entries: List[Entry]) -> str:
                 "tool": entry.tool_name,
                 "timestamp": entry.timestamp,
                 "minutes": round(minutes, 3),
-                "color": color,
+                "color": color_map.get(entry.tool_name, color),
             }
         )
     config = {
@@ -649,17 +666,33 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         }}
       }}, {{ passive: false }});
 
-      // Jump from entry to timeline marker
+      const centerMarker = (id) => {{
+        const marker = track.querySelector(`.timeline-event[data-id=\"${{id}}\"]`);
+        if (!marker) return;
+        const center = marker.offsetLeft - scrollBox.clientWidth / 2 + marker.offsetWidth / 2;
+        scrollBox.scrollTo({{ left: center, behavior: 'smooth' }});
+        highlightMarker(id);
+      }};
+
+      // Jump from entry to timeline marker or next invocation
       const wireEntryButtons = () => {{
         document.querySelectorAll('.jump-to-timeline').forEach((btn) => {{
           const targetId = btn.dataset.target;
           btn.addEventListener('click', () => {{
-            const marker = track.querySelector(`.timeline-event[data-id=\"${{targetId}}\"]`);
-            if (marker) {{
-              const center = marker.offsetLeft - scrollBox.clientWidth / 2 + marker.offsetWidth / 2;
-              scrollBox.scrollTo({{ left: center, behavior: 'smooth' }});
-              highlightMarker(targetId);
+            centerMarker(targetId);
+          }});
+        }});
+
+        document.querySelectorAll('.jump-to-next').forEach((btn) => {{
+          const targetId = btn.dataset.target;
+          btn.addEventListener('click', () => {{
+            const nextEntry = document.getElementById(targetId);
+            if (nextEntry) {{
+              nextEntry.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+              nextEntry.classList.add('entry-highlight');
+              setTimeout(() => nextEntry.classList.remove('entry-highlight'), 2200);
             }}
+            centerMarker(targetId);
           }});
         }});
       }};
@@ -1068,6 +1101,11 @@ BASE_CSS = """
 
 
 def build_page(entries: List[Entry], source_path: Path) -> str:
+    next_for_tool: dict[str, Optional[str]] = {}
+    for entry in reversed(entries):
+        if entry.tool_name and entry.anchor_id:
+            entry.next_tool_anchor = next_for_tool.get(entry.tool_name)
+            next_for_tool[entry.tool_name] = entry.anchor_id
     cards_html = "\n".join(entry_to_html(entry) for entry in entries)
     total = len(entries)
     timeline_html = render_tool_timeline(entries)
@@ -1120,17 +1158,23 @@ def entry_to_html(entry: Entry) -> str:
     classes = " ".join([entry.css_class, *entry.extra_classes]).strip()
     id_attr = f' id="{html.escape(entry.anchor_id)}"' if entry.anchor_id else ""
     jump_btn = ""
+    next_btn = ""
     if entry.tool_name and entry.anchor_id:
         jump_btn = (
             f'<button type="button" class="nav-button secondary small jump-to-timeline" '
             f'data-target="{html.escape(entry.anchor_id)}">On timeline</button>'
         )
+        if entry.next_tool_anchor:
+            next_btn = (
+                f'<button type="button" class="nav-button secondary small jump-to-next" '
+                f'data-target="{html.escape(entry.next_tool_anchor)}">Next this tool</button>'
+            )
     return (
         f'<article class="entry {classes}"{id_attr}>'
         f"<header>"
         f"<div>{html.escape(entry.label)}</div>"
         f"<small>{html.escape(entry.timestamp)} · line {entry.lineno} · {html.escape(entry.raw_type)}</small>"
-        f"{jump_btn}"
+        f"{jump_btn}{next_btn}"
         f"</header>"
         f"<div>{entry.body_html}</div>"
         f"</article>"
