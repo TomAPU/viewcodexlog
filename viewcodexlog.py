@@ -544,10 +544,18 @@ def render_tool_timeline(entries: List[Entry]) -> str:
       const maxStackPerColumn = 5;
       const columnOffset = 12; // px horizontal nudge when stacking over 5
 
-      const highlightEntry = (id) => {{
+      const scrollEntryIntoView = (id) => {{
         const target = document.getElementById(id);
+        if (!target) return null;
+        const gap = panel.classList.contains("hidden") ? 8 : (panel.offsetHeight + 8);
+        const top = target.getBoundingClientRect().top + window.scrollY - gap;
+        window.scrollTo({{ top, behavior: "smooth" }});
+        return target;
+      }};
+
+      const highlightEntry = (id) => {{
+        const target = scrollEntryIntoView(id);
         if (!target) return;
-        target.scrollIntoView({{ behavior: "smooth", block: "center" }});
         target.classList.add("entry-highlight");
         setTimeout(() => target.classList.remove("entry-highlight"), 2200);
       }};
@@ -686,9 +694,8 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         document.querySelectorAll('.jump-to-next').forEach((btn) => {{
           const targetId = btn.dataset.target;
           btn.addEventListener('click', () => {{
-            const nextEntry = document.getElementById(targetId);
+            const nextEntry = scrollEntryIntoView(targetId);
             if (nextEntry) {{
-              nextEntry.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
               nextEntry.classList.add('entry-highlight');
               setTimeout(() => nextEntry.classList.remove('entry-highlight'), 2200);
             }}
