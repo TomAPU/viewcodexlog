@@ -1006,10 +1006,11 @@ BASE_CSS = """
     .timeline-panel.hidden { display: none; }
     .timeline-header {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.5rem;
+      align-items: flex-start;
+      justify-content: flex-start;
+      gap: 0.5rem 0.75rem;
       flex-wrap: wrap;
+      width: 100%;
     }
     .timeline-range {
       color: #6c757d;
@@ -1109,6 +1110,9 @@ BASE_CSS = """
       z-index: 25;
     }
     .timeline-toggle-btn.hidden { display: none; }
+    .timeline-header > button {
+      flex-shrink: 0;
+    }
     .timeline-event.highlight {
       box-shadow: 0 0 0 4px #ffd166, 0 3px 10px rgba(0,0,0,0.32);
       transform: translateX(-50%) scale(1.1);
