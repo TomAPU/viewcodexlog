@@ -525,6 +525,10 @@ def render_tool_timeline(entries: List[Entry]) -> str:
       <div class="timeline-track" id="timeline-track"></div>
       <div class="timeline-axis" id="timeline-axis"></div>
     </div>
+    <div class="legend-actions">
+      <button type="button" class="nav-button secondary small" id="legend-select-all">Select all</button>
+      <button type="button" class="nav-button secondary small" id="legend-clear-all">Unselect all</button>
+    </div>
     <div class="timeline-legend" id="timeline-legend"></div>
   </section>
   <button class="timeline-toggle-btn hidden" id="timeline-toggle-btn" type="button">Show tool timeline</button>
@@ -538,6 +542,8 @@ def render_tool_timeline(entries: List[Entry]) -> str:
       const track = document.getElementById("timeline-track");
       const axis = document.getElementById("timeline-axis");
       const legend = document.getElementById("timeline-legend");
+      const selectAllBtn = document.getElementById("legend-select-all");
+      const clearAllBtn = document.getElementById("legend-clear-all");
       if (!panel || !track || !axis || !legend || !scrollBox || !cfg?.events?.length) return;
 
       const total = Math.max(cfg.totalMinutes, 0.01);
@@ -573,6 +579,17 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         setTimeout(() => marker.classList.remove("highlight"), 1200);
       }};
 
+      const applyFilters = () => {{
+        const activeTools = new Set();
+        legend.querySelectorAll('input[type="checkbox"]').forEach((cb) => {{
+          if (cb.checked) activeTools.add(cb.value);
+        }});
+        track.querySelectorAll('.timeline-event').forEach((node) => {{
+          const tool = node.dataset.tool;
+          node.style.display = activeTools.has(tool) ? "block" : "none";
+        }});
+      }};
+
       const placeEvents = () => {{
         const viewport = scrollBox.clientWidth || window.innerWidth || 1;
         const baseWidth = Math.max(minWidth, viewport, total * pxPerMinute);
@@ -603,6 +620,7 @@ def render_tool_timeline(entries: List[Entry]) -> str:
           node.style.left = `${{x}}px`;
           node.style.top = `${{10 + laneIdx * laneHeight}}px`;
           node.style.backgroundColor = ev.color;
+          node.dataset.tool = ev.tool;
           node.addEventListener("click", () => {{
             highlightEntry(ev.id);
             highlightMarker(ev.id);
@@ -635,16 +653,24 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         }}
 
         for (const [tool, color] of seenTools.entries()) {{
-          const item = document.createElement("div");
+          const item = document.createElement("label");
+          item.className = "legend-item";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.value = tool;
+          cb.checked = tool === "{TARGET_RUN_CODE_FN}";
           const swatch = document.createElement("span");
           swatch.className = "swatch";
           swatch.style.backgroundColor = color;
           const label = document.createElement("span");
           label.textContent = tool;
+          item.appendChild(cb);
           item.appendChild(swatch);
           item.appendChild(label);
           legend.appendChild(item);
+          cb.addEventListener("change", applyFilters);
         }}
+        applyFilters();
       }};
 
       const formatTick = (minutes) => {{
@@ -656,17 +682,6 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         if (minutes < 1) return `${{Math.round(minutes * 60)}}s`;
         return `${{Math.round(minutes)}}m`;
       }};
-
-      const interval = cfg.tickInterval || total;
-      axis.innerHTML = "";
-      for (let m = 0; m <= cfg.totalMinutes + interval * 0.25; m += interval) {{
-        const tick = document.createElement("div");
-        tick.className = "timeline-tick";
-        const px = Math.min(totalWidth, Math.max(0, (m / total) * totalWidth));
-        tick.style.left = `${{px}}px`;
-        tick.textContent = formatTick(m);
-        axis.appendChild(tick);
-      }}
 
       const updateLayout = () => {{
         placeEvents();
@@ -688,6 +703,14 @@ def render_tool_timeline(entries: List[Entry]) -> str:
       }};
       hideBtn?.addEventListener("click", hidePanel);
       showBtn?.addEventListener("click", showPanel);
+      selectAllBtn?.addEventListener("click", () => {{
+        legend.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.checked = true);
+        applyFilters();
+      }});
+      clearAllBtn?.addEventListener("click", () => {{
+        legend.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.checked = false);
+        applyFilters();
+      }});
 
       // Horizontal wheel scrolling
       scrollBox.addEventListener("wheel", (e) => {{
@@ -1082,18 +1105,38 @@ BASE_CSS = """
     .timeline-legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.4rem 0.75rem;
+      gap: 0.35rem 0.75rem;
       margin-top: 0.6rem;
       font-size: 0.85rem;
       color: #495057;
+    }
+    .timeline-legend .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 6px;
+      background: #f8f9fb;
+      border: 1px solid #e3e7ed;
+      cursor: pointer;
+      user-select: none;
+    }
+    .timeline-legend input[type="checkbox"] {
+      margin: 0;
+      cursor: pointer;
     }
     .timeline-legend .swatch {
       display: inline-block;
       width: 12px;
       height: 12px;
       border-radius: 3px;
-      margin-right: 0.35rem;
       border: 1px solid rgba(0,0,0,0.08);
+    }
+    .legend-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
     }
     .timeline-toggle-btn {
       position: fixed;
@@ -1110,6 +1153,10 @@ BASE_CSS = """
       z-index: 25;
     }
     .timeline-toggle-btn.hidden { display: none; }
+    .timeline-event.highlight {
+      box-shadow: 0 0 0 4px #ffd166, 0 3px 10px rgba(0,0,0,0.32);
+      transform: translateX(-50%) scale(1.1);
+    }
     .timeline-header > button {
       flex-shrink: 0;
     }
@@ -1140,9 +1187,10 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
         if entry.tool_name and entry.anchor_id:
             entry.next_tool_anchor = next_for_tool.get(entry.tool_name)
             next_for_tool[entry.tool_name] = entry.anchor_id
-    cards_html = "\n".join(entry_to_html(entry) for entry in entries)
+    card_fragments = [entry_to_html(entry) for entry in entries]
     total = len(entries)
     timeline_html = render_tool_timeline(entries)
+    cards_json = json.dumps(card_fragments).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1164,10 +1212,30 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
     <p>Source: {html.escape(str(source_path))} · {total} entries</p>
   </header>
   {timeline_html}
-  <div class="container">
-    {cards_html}
-  </div>
+  <div class="container" id="cards-container"></div>
   <script>
+    const cardFragments = {cards_json};
+    (() => {{
+      const container = document.getElementById("cards-container");
+      if (!container) return;
+      const batchSize = 200;
+      let index = 0;
+      const appendBatch = () => {{
+        const limit = Math.min(index + batchSize, cardFragments.length);
+        const frag = document.createDocumentFragment();
+        for (; index < limit; index++) {{
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = cardFragments[index];
+          frag.appendChild(wrapper.firstElementChild);
+        }}
+        container.appendChild(frag);
+        if (index < cardFragments.length) {{
+          requestIdleCallback(appendBatch);
+        }}
+      }};
+      appendBatch();
+    }})();
+
     (() => {{
       const btn = document.getElementById("toggle-meta");
       if (!btn) return;
