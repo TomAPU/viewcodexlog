@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
@@ -30,6 +32,8 @@ class Entry:
     raw_type: str
     lineno: int
     extra_classes: List[str] = field(default_factory=list)
+    anchor_id: Optional[str] = None
+    tool_name: Optional[str] = None
 
 
 @dataclass
@@ -184,6 +188,8 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
             css_class="entry-tool",
             raw_type="response_item/function_call",
             lineno=lineno,
+            anchor_id=f"entry-{lineno}",
+            tool_name=name,
         )
 
     if subtype == "function_call_output":
@@ -337,6 +343,42 @@ def try_parse_json(value: object) -> Optional[object]:
         return None
 
 
+def parse_iso_timestamp(value: str) -> datetime:
+    text = value
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text)
+
+
+def choose_tick_interval(duration_minutes: float) -> int:
+    candidates = [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300]
+    for interval in candidates:
+        if duration_minutes / interval <= 8:
+            return interval
+    return candidates[-1]
+
+
+def color_for_tool(tool_name: str) -> str:
+    digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()
+    hue = int(digest[:8], 16) % 360
+    return f"hsl({hue}, 70%, 55%)"
+
+
+def format_duration_minutes(minutes: float) -> str:
+    if minutes < 1:
+        return f"{int(round(minutes * 60))}s"
+    hours = int(minutes // 60)
+    rem = int(round(minutes - hours * 60))
+    if rem == 60:
+        hours += 1
+        rem = 0
+    if hours and rem:
+        return f"{hours}h {rem}m"
+    if hours:
+        return f"{hours}h"
+    return f"{rem}m"
+
+
 def render_structured_data(data: object) -> str:
     if isinstance(data, dict):
         if data.get("type") == "code":
@@ -412,6 +454,227 @@ def render_diff(diff_text: str) -> str:
         formatted.append(f'<span class="{cls}">{escaped}</span>')
     return f'<pre class="diff-block">{"".join(formatted)}</pre>'
 
+
+def render_tool_timeline(entries: List[Entry]) -> str:
+    tool_events: List[tuple[Entry, datetime]] = []
+    for entry in entries:
+        if entry.tool_name and entry.anchor_id:
+            tool_events.append((entry, parse_iso_timestamp(entry.timestamp)))
+    if not tool_events:
+        return ""
+    tool_events.sort(key=lambda item: item[1])
+    start_ts = tool_events[0][1]
+    end_ts = tool_events[-1][1]
+    duration_minutes = max((end_ts - start_ts).total_seconds() / 60.0, 0.01)
+    tick_interval = choose_tick_interval(duration_minutes)
+    events_payload = []
+    for entry, when in tool_events:
+        minutes = (when - start_ts).total_seconds() / 60.0
+        color = color_for_tool(entry.tool_name)
+        events_payload.append(
+            {
+                "id": entry.anchor_id,
+                "tool": entry.tool_name,
+                "timestamp": entry.timestamp,
+                "minutes": round(minutes, 3),
+                "color": color,
+            }
+        )
+    config = {
+        "events": events_payload,
+        "totalMinutes": duration_minutes,
+        "tickInterval": tick_interval,
+    }
+    config_json = json.dumps(config).replace("</", "<\\/")
+    start_label = html.escape(tool_events[0][0].timestamp)
+    end_label = html.escape(tool_events[-1][0].timestamp)
+    duration_label = html.escape(format_duration_minutes(duration_minutes))
+    return f"""
+  <section class="timeline-panel" id="tool-timeline">
+    <div class="timeline-header">
+      <div>
+        <strong>Tool timeline</strong>
+        <div class="timeline-range">{start_label} → {end_label} · {duration_label}</div>
+      </div>
+      <button type="button" class="nav-button secondary" id="timeline-hide-btn">Hide</button>
+    </div>
+    <div class="timeline-scroll" id="timeline-scroll">
+      <div class="timeline-track" id="timeline-track"></div>
+      <div class="timeline-axis" id="timeline-axis"></div>
+    </div>
+    <div class="timeline-legend" id="timeline-legend"></div>
+  </section>
+  <button class="timeline-toggle-btn hidden" id="timeline-toggle-btn" type="button">Show tool timeline</button>
+  <script>
+    const setupTimeline = () => {{
+      const cfg = {config_json};
+      const panel = document.getElementById("tool-timeline");
+      const showBtn = document.getElementById("timeline-toggle-btn");
+      const hideBtn = document.getElementById("timeline-hide-btn");
+      const scrollBox = document.getElementById("timeline-scroll");
+      const track = document.getElementById("timeline-track");
+      const axis = document.getElementById("timeline-axis");
+      const legend = document.getElementById("timeline-legend");
+      if (!panel || !track || !axis || !legend || !scrollBox || !cfg?.events?.length) return;
+
+      const total = Math.max(cfg.totalMinutes, 0.01);
+      const laneHeight = 18;
+      const minGapPx = 18;
+      const pxPerMinute = 28;
+      const minWidth = 800;
+      let totalWidth = minWidth;
+      const bucketSize = 18; // px grouping for near-simultaneous calls
+      const maxStackPerColumn = 5;
+      const columnOffset = 12; // px horizontal nudge when stacking over 5
+
+      const highlightEntry = (id) => {{
+        const target = document.getElementById(id);
+        if (!target) return;
+        target.scrollIntoView({{ behavior: "smooth", block: "center" }});
+        target.classList.add("entry-highlight");
+        setTimeout(() => target.classList.remove("entry-highlight"), 2200);
+      }};
+
+      const highlightMarker = (id) => {{
+        const marker = track.querySelector(`.timeline-event[data-id=\"${{id}}\"]`);
+        if (!marker) return;
+        marker.classList.add("highlight");
+        setTimeout(() => marker.classList.remove("highlight"), 1200);
+      }};
+
+      const placeEvents = () => {{
+        const viewport = scrollBox.clientWidth || window.innerWidth || 1;
+        const baseWidth = Math.max(minWidth, viewport, total * pxPerMinute);
+        totalWidth = baseWidth;
+        track.innerHTML = "";
+        legend.innerHTML = "";
+
+        const buckets = new Map();
+        const seenTools = new Map();
+        let maxX = baseWidth;
+        cfg.events.forEach((ev) => {{
+          const rawX = Math.max(0, Math.min(baseWidth, (ev.minutes / total) * baseWidth));
+          const bucket = Math.floor(rawX / bucketSize);
+          const count = buckets.get(bucket) || 0;
+          const columnIdx = Math.floor(count / maxStackPerColumn);
+          const laneIdx = count % maxStackPerColumn;
+          const x = rawX + columnIdx * columnOffset;
+          buckets.set(bucket, count + 1);
+          maxX = Math.max(maxX, x + 16);
+
+          const node = document.createElement("button");
+          node.type = "button";
+          node.className = "timeline-event";
+          node.title = `${{ev.tool}} · ${{ev.timestamp}}`;
+          node.style.left = `${{x}}px`;
+          node.style.top = `${{10 + laneIdx * laneHeight}}px`;
+          node.style.backgroundColor = ev.color;
+          node.addEventListener("click", () => {{
+            highlightEntry(ev.id);
+            highlightMarker(ev.id);
+          }});
+          node.dataset.id = ev.id;
+          track.appendChild(node);
+          seenTools.set(ev.tool, ev.color);
+        }});
+
+        totalWidth = Math.max(maxX + 24, baseWidth);
+        track.style.width = `${{totalWidth}}px`;
+        axis.style.width = `${{totalWidth}}px`;
+
+        const maxCount = buckets.size ? Math.max(...Array.from(buckets.values())) : 0;
+        const height = Math.max(50, Math.min(maxStackPerColumn, maxCount || 1) * laneHeight + 24);
+        track.style.height = `${{height}}px`;
+
+        for (const [tool, color] of seenTools.entries()) {{
+          const item = document.createElement("div");
+          const swatch = document.createElement("span");
+          swatch.className = "swatch";
+          swatch.style.backgroundColor = color;
+          const label = document.createElement("span");
+          label.textContent = tool;
+          item.appendChild(swatch);
+          item.appendChild(label);
+          legend.appendChild(item);
+        }}
+      }};
+
+      const formatTick = (minutes) => {{
+        if (minutes >= 60) {{
+          const h = Math.floor(minutes / 60);
+          const m = Math.round(minutes - h * 60);
+          return m ? `${{h}}h ${{m}}m` : `${{h}}h`;
+        }}
+        if (minutes < 1) return `${{Math.round(minutes * 60)}}s`;
+        return `${{Math.round(minutes)}}m`;
+      }};
+
+      const interval = cfg.tickInterval || total;
+      axis.innerHTML = "";
+      for (let m = 0; m <= cfg.totalMinutes + interval * 0.25; m += interval) {{
+        const tick = document.createElement("div");
+        tick.className = "timeline-tick";
+        const px = Math.min(totalWidth, Math.max(0, (m / total) * totalWidth));
+        tick.style.left = `${{px}}px`;
+        tick.textContent = formatTick(m);
+        axis.appendChild(tick);
+      }}
+
+      const updateLayout = () => {{
+        placeEvents();
+        const pad = panel.offsetHeight + 12;
+        document.body.style.paddingTop = `${{pad}}px`;
+        const maxScroll = Math.max(0, totalWidth - scrollBox.clientWidth);
+        scrollBox.scrollLeft = Math.min(scrollBox.scrollLeft, maxScroll);
+      }};
+
+      const hidePanel = () => {{
+        panel.classList.add("hidden");
+        showBtn?.classList.remove("hidden");
+        document.body.style.paddingTop = `12px`;
+      }};
+      const showPanel = () => {{
+        panel.classList.remove("hidden");
+        showBtn?.classList.add("hidden");
+        updateLayout();
+      }};
+      hideBtn?.addEventListener("click", hidePanel);
+      showBtn?.addEventListener("click", showPanel);
+
+      // Horizontal wheel scrolling
+      scrollBox.addEventListener("wheel", (e) => {{
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {{
+          scrollBox.scrollLeft += e.deltaY;
+          e.preventDefault();
+        }}
+      }}, {{ passive: false }});
+
+      // Jump from entry to timeline marker
+      const wireEntryButtons = () => {{
+        document.querySelectorAll('.jump-to-timeline').forEach((btn) => {{
+          const targetId = btn.dataset.target;
+          btn.addEventListener('click', () => {{
+            const marker = track.querySelector(`.timeline-event[data-id=\"${{targetId}}\"]`);
+            if (marker) {{
+              const center = marker.offsetLeft - scrollBox.clientWidth / 2 + marker.offsetWidth / 2;
+              scrollBox.scrollTo({{ left: center, behavior: 'smooth' }});
+              highlightMarker(targetId);
+            }}
+          }});
+        }});
+      }};
+
+      updateLayout();
+      wireEntryButtons();
+      window.addEventListener("resize", updateLayout);
+    }};
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", setupTimeline);
+    }} else {{
+      setupTimeline();
+    }}
+  </script>
+  """
 
 BASE_CSS = """
     body {
@@ -571,6 +834,10 @@ BASE_CSS = """
       background: #0d6efd;
       color: white;
     }
+    .nav-button.small {
+      padding: 0.3rem 0.6rem;
+      font-size: 0.85rem;
+    }
     .nav-button.secondary {
       background: #6c757d;
     }
@@ -660,12 +927,150 @@ BASE_CSS = """
     .diff-context {
       color: #c9d1d9;
     }
+    .timeline-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      width: 100%;
+      background: white;
+      border-radius: 0 0 12px 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+      padding: 0.85rem 1.25rem 1rem;
+      z-index: 30;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .timeline-panel.hidden { display: none; }
+    .timeline-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .timeline-range {
+      color: #6c757d;
+      font-size: 0.85rem;
+      margin-top: 0.1rem;
+    }
+    .timeline-scroll {
+      position: relative;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 0.25rem;
+      margin-top: 0.65rem;
+    }
+    .timeline-scroll::-webkit-scrollbar {
+      height: 10px;
+    }
+    .timeline-scroll::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 999px;
+    }
+    .timeline-scroll::-webkit-scrollbar-track {
+      background: #edf2f7;
+    }
+    .timeline-track {
+      position: relative;
+      min-height: 64px;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      transition: height 0.15s ease;
+    }
+    .timeline-event {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid #ffffff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      cursor: pointer;
+      transform: translateX(-50%);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .timeline-event:hover {
+      transform: translateX(-50%) scale(1.08);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.28);
+    }
+    .timeline-axis {
+      position: relative;
+      margin-top: 0.35rem;
+      height: 22px;
+    }
+    .timeline-tick {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      color: #6c757d;
+      font-size: 0.75rem;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .timeline-tick::before {
+      content: "";
+      display: block;
+      width: 1px;
+      height: 8px;
+      background: #ced4da;
+      margin: 0 auto 2px;
+    }
+    .timeline-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.75rem;
+      margin-top: 0.6rem;
+      font-size: 0.85rem;
+      color: #495057;
+    }
+    .timeline-legend .swatch {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      margin-right: 0.35rem;
+      border: 1px solid rgba(0,0,0,0.08);
+    }
+    .timeline-toggle-btn {
+      position: fixed;
+      top: 0.75rem;
+      right: 1rem;
+      background: #0d6efd;
+      color: white;
+      border: none;
+      border-radius: 999px;
+      padding: 0.6rem 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 8px 18px rgba(13,110,253,0.25);
+      z-index: 25;
+    }
+    .timeline-toggle-btn.hidden { display: none; }
+    .timeline-event.highlight {
+      box-shadow: 0 0 0 4px #ffd166, 0 3px 10px rgba(0,0,0,0.32);
+      transform: translateX(-50%) scale(1.1);
+    }
+    .entry-highlight {
+      box-shadow: 0 0 0 3px #ffd166 inset, 0 6px 16px rgba(0,0,0,0.16);
+      transition: box-shadow 0.3s ease;
+    }
+    @media (max-width: 640px) {
+      .timeline-panel {
+        padding: 0.75rem 1rem 0.85rem;
+        border-radius: 0 0 10px 10px;
+      }
+      .timeline-toggle-btn {
+        right: 0.75rem;
+        top: 0.65rem;
+      }
+    }
 """
 
 
 def build_page(entries: List[Entry], source_path: Path) -> str:
     cards_html = "\n".join(entry_to_html(entry) for entry in entries)
     total = len(entries)
+    timeline_html = render_tool_timeline(entries)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -686,6 +1091,7 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
     </div>
     <p>Source: {html.escape(str(source_path))} · {total} entries</p>
   </header>
+  {timeline_html}
   <div class="container">
     {cards_html}
   </div>
@@ -712,11 +1118,19 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
 
 def entry_to_html(entry: Entry) -> str:
     classes = " ".join([entry.css_class, *entry.extra_classes]).strip()
+    id_attr = f' id="{html.escape(entry.anchor_id)}"' if entry.anchor_id else ""
+    jump_btn = ""
+    if entry.tool_name and entry.anchor_id:
+        jump_btn = (
+            f'<button type="button" class="nav-button secondary small jump-to-timeline" '
+            f'data-target="{html.escape(entry.anchor_id)}">On timeline</button>'
+        )
     return (
-        f'<article class="entry {classes}">'
+        f'<article class="entry {classes}"{id_attr}>'
         f"<header>"
         f"<div>{html.escape(entry.label)}</div>"
         f"<small>{html.escape(entry.timestamp)} · line {entry.lineno} · {html.escape(entry.raw_type)}</small>"
+        f"{jump_btn}"
         f"</header>"
         f"<div>{entry.body_html}</div>"
         f"</article>"
