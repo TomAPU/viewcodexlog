@@ -2,7 +2,7 @@
 
 > This entire project was crafted by Codex, and its functionality has been thoroughly cat-tested. 🐾
 
-`viewcodexlog.py` is a tiny Python web app that renders Codex CLI JSONL traces as a readable conversation timeline. Point it at any `*.jsonl` log and it spins up a local HTTP server with an interactive HTML view.
+`viewcodexlog.py` is a tiny Python web app that renders Codex CLI JSONL traces as a readable conversation timeline. By default it scans `~/.codex/sessions`, lists all discovered logs, and lets you switch sessions in the browser.
 
 ## Features
 
@@ -14,10 +14,16 @@
 ## Quick start
 
 ```bash
-python3 viewcodexlog.py -l kctf_poc_gen_success.jsonl -p 8123
+python3 viewcodexlog.py -p 8123
 ```
 
-Then open `http://127.0.0.1:8123` in your browser. Use the “Hide meta blocks” button if you want to focus on user/assistant/tool turns.
+Then open `http://127.0.0.1:8123` in your browser. Use the session dropdown to switch logs (each option shows session time plus title/summary), and use “Hide meta blocks” to focus on user/assistant/tool turns.
+
+If you want to force a single log:
+
+```bash
+python3 viewcodexlog.py -l kctf_poc_gen_success.jsonl -p 8123
+```
 
 To generate a static HTML export instead of running a server:
 

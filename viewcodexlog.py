@@ -718,22 +718,24 @@ def render_tool_timeline(entries: List[Entry]) -> str:
     duration_label = html.escape(format_duration_minutes(duration_minutes))
     return f"""
   <section class="timeline-panel" id="tool-timeline">
-    <div class="timeline-header">
-      <div>
-        <strong>Tool timeline</strong>
-        <div class="timeline-range">{start_label} → {end_label} · {duration_label}</div>
+    <div class="timeline-inner">
+      <div class="timeline-header">
+        <div>
+          <strong>Tool timeline</strong>
+          <div class="timeline-range">{start_label} → {end_label} · {duration_label}</div>
+        </div>
+        <button type="button" class="nav-button secondary" id="timeline-hide-btn">Hide</button>
       </div>
-      <button type="button" class="nav-button secondary" id="timeline-hide-btn">Hide</button>
+      <div class="timeline-scroll" id="timeline-scroll">
+        <div class="timeline-track" id="timeline-track"></div>
+        <div class="timeline-axis" id="timeline-axis"></div>
+      </div>
+      <div class="legend-actions">
+        <button type="button" class="nav-button secondary small" id="legend-select-all">Select all</button>
+        <button type="button" class="nav-button secondary small" id="legend-clear-all">Unselect all</button>
+      </div>
+      <div class="timeline-legend" id="timeline-legend"></div>
     </div>
-    <div class="timeline-scroll" id="timeline-scroll">
-      <div class="timeline-track" id="timeline-track"></div>
-      <div class="timeline-axis" id="timeline-axis"></div>
-    </div>
-    <div class="legend-actions">
-      <button type="button" class="nav-button secondary small" id="legend-select-all">Select all</button>
-      <button type="button" class="nav-button secondary small" id="legend-clear-all">Unselect all</button>
-    </div>
-    <div class="timeline-legend" id="timeline-legend"></div>
   </section>
   <button class="timeline-toggle-btn hidden" id="timeline-toggle-btn" type="button">Show tool timeline</button>
   <script>
@@ -1007,6 +1009,16 @@ def render_session_selector(
 
 
 BASE_CSS = """
+    :root {
+      --page-max-width: 1680px;
+      --reading-width: 1080px;
+      --page-gutter: clamp(14px, 2vw, 32px);
+    }
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 0;
@@ -1014,9 +1026,24 @@ BASE_CSS = """
       color: #1c1c1c;
     }
     header {
-      padding: 1rem 2rem;
+      padding: 1rem var(--page-gutter);
       background: #232f3e;
       color: white;
+    }
+    header > .header-top,
+    header > .session-switcher,
+    header > p {
+      width: 100%;
+      max-width: var(--page-max-width);
+      margin-left: auto;
+      margin-right: auto;
+    }
+    header > p {
+      margin: 0.8rem auto 0;
+      color: #d7dee9;
+    }
+    h1 {
+      margin: 0;
     }
     .header-top {
       display: flex;
@@ -1042,7 +1069,8 @@ BASE_CSS = """
       font-size: 0.92rem;
     }
     .session-switcher select {
-      min-width: min(100%, 640px);
+      min-width: min(100%, 360px);
+      width: min(100%, 760px);
       max-width: 100%;
       border-radius: 7px;
       border: 1px solid #cfd7e3;
@@ -1056,20 +1084,28 @@ BASE_CSS = """
       font-size: 0.8rem;
     }
     .container {
-      padding: 1rem 2rem 3rem;
+      padding: 1rem var(--page-gutter) 3rem;
+      width: 100%;
+      max-width: var(--page-max-width);
+      margin: 0 auto;
     }
     .entry {
       background: white;
       border-radius: 8px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       padding: 1rem;
+      width: min(100%, var(--reading-width));
+      margin-left: auto;
+      margin-right: auto;
       margin-bottom: 1rem;
       border-left: 4px solid transparent;
     }
     .entry header {
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: center;
+      gap: 0.35rem 0.6rem;
       margin-bottom: 0.5rem;
       padding: 0;
       background: none;
@@ -1210,6 +1246,9 @@ BASE_CSS = """
       border-radius: 8px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       padding: 1rem;
+      width: min(100%, var(--reading-width));
+      margin-left: auto;
+      margin-right: auto;
       margin-bottom: 1rem;
     }
     .panel h2 {
@@ -1232,6 +1271,9 @@ BASE_CSS = """
       background: white;
       border-radius: 8px;
       padding: 1rem;
+      width: min(100%, var(--reading-width));
+      margin-left: auto;
+      margin-right: auto;
       margin-bottom: 1rem;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       border-left: 4px solid #0d6efd;
@@ -1291,9 +1333,14 @@ BASE_CSS = """
       background: white;
       border-radius: 0 0 12px 12px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-      padding: 0.85rem 1.25rem 1rem;
+      padding: 0.85rem var(--page-gutter) 1rem;
       z-index: 30;
       border-bottom: 1px solid #e5e7eb;
+    }
+    .timeline-inner {
+      width: 100%;
+      max-width: var(--page-max-width);
+      margin: 0 auto;
     }
     .timeline-panel.hidden { display: none; }
     .timeline-header {
@@ -1410,7 +1457,7 @@ BASE_CSS = """
     .timeline-toggle-btn {
       position: fixed;
       top: 0.75rem;
-      right: 1rem;
+      right: max(var(--page-gutter), calc((100vw - var(--page-max-width)) / 2 + var(--page-gutter)));
       background: #0d6efd;
       color: white;
       border: none;
@@ -1437,13 +1484,23 @@ BASE_CSS = """
       box-shadow: 0 0 0 3px #ffd166 inset, 0 6px 16px rgba(0,0,0,0.16);
       transition: box-shadow 0.3s ease;
     }
+    @media (min-width: 1800px) {
+      :root {
+        --reading-width: 1160px;
+      }
+      .entry,
+      .panel,
+      .diff-card {
+        padding: 1.1rem 1.2rem;
+      }
+    }
     @media (max-width: 640px) {
       .timeline-panel {
-        padding: 0.75rem 1rem 0.85rem;
+        padding: 0.75rem var(--page-gutter) 0.85rem;
         border-radius: 0 0 10px 10px;
       }
       .timeline-toggle-btn {
-        right: 0.75rem;
+        right: max(var(--page-gutter), calc((100vw - var(--page-max-width)) / 2 + var(--page-gutter)));
         top: 0.65rem;
       }
     }
