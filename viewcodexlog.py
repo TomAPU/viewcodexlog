@@ -111,13 +111,18 @@ def session_time_from_filename(path: Path) -> Optional[str]:
 
 
 def format_session_time_label(timestamp: str) -> str:
+    return format_timestamp_for_display(timestamp)
+
+
+def format_timestamp_for_display(timestamp: str) -> str:
     dt = parse_iso_timestamp_safe(timestamp)
     if dt is None:
         return timestamp or "unknown time"
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    local_dt = dt.astimezone()
+    tz_label = local_dt.tzname() or local_dt.strftime("%z")
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S ") + tz_label
 
 
 def compact_text(text: object, limit: int = 96) -> str:
@@ -705,6 +710,7 @@ def render_tool_timeline(entries: List[Entry]) -> str:
                 "id": entry.anchor_id,
                 "tool": entry.tool_name,
                 "timestamp": entry.timestamp,
+                "timestampLabel": format_timestamp_for_display(entry.timestamp),
                 "minutes": round(minutes, 3),
                 "color": color_map.get(entry.tool_name, color),
             }
@@ -715,8 +721,8 @@ def render_tool_timeline(entries: List[Entry]) -> str:
         "tickInterval": tick_interval,
     }
     config_json = json.dumps(config).replace("</", "<\\/")
-    start_label = html.escape(tool_events[0][0].timestamp)
-    end_label = html.escape(tool_events[-1][0].timestamp)
+    start_label = html.escape(format_timestamp_for_display(tool_events[0][0].timestamp))
+    end_label = html.escape(format_timestamp_for_display(tool_events[-1][0].timestamp))
     duration_label = html.escape(format_duration_minutes(duration_minutes))
     return f"""
   <section class="timeline-panel" id="tool-timeline">
@@ -824,7 +830,7 @@ def render_tool_timeline(entries: List[Entry]) -> str:
           const node = document.createElement("button");
           node.type = "button";
           node.className = "timeline-event";
-          node.title = `${{ev.tool}} · ${{ev.timestamp}}`;
+          node.title = `${{ev.tool}} · ${{ev.timestampLabel || ev.timestamp}}`;
           node.style.left = `${{x}}px`;
           node.style.top = `${{10 + laneIdx * laneHeight}}px`;
           node.style.backgroundColor = ev.color;
@@ -1669,7 +1675,7 @@ def entry_to_html(entry: Entry) -> str:
         f'<article class="entry {classes}"{id_attr}>'
         f"<header>"
         f"<div>{html.escape(entry.label)}</div>"
-        f"<small>{html.escape(entry.timestamp)} · line {entry.lineno} · {html.escape(entry.raw_type)}</small>"
+        f"<small>{html.escape(format_timestamp_for_display(entry.timestamp))} · line {entry.lineno} · {html.escape(entry.raw_type)}</small>"
         f"{jump_btn}{next_btn}"
         f"</header>"
         f"<div>{entry.body_html}</div>"
@@ -1762,7 +1768,7 @@ def render_upload_summary(uploads: List[RunCodeUpload]) -> str:
         rows.append(
             "<tr>"
             f"<td>{upload.index}</td>"
-            f"<td>{html.escape(upload.timestamp)}</td>"
+            f"<td>{html.escape(format_timestamp_for_display(upload.timestamp))}</td>"
             f"<td>line {upload.lineno}</td>"
             f"<td>{code_details}</td>"
             f"<td>{flags_details}</td>"
