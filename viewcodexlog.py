@@ -471,6 +471,7 @@ def convert_event_msg(record: dict, lineno: int) -> Entry:
             css_class=css,
             raw_type=f"event_msg/{subtype}",
             lineno=lineno,
+            extra_classes=["event-block"],
         )
 
     if subtype == "token_count":
@@ -483,7 +484,7 @@ def convert_event_msg(record: dict, lineno: int) -> Entry:
             css_class="entry-metric",
             raw_type="event_msg/token_count",
             lineno=lineno,
-            extra_classes=["collapsible-meta"],
+            extra_classes=["collapsible-meta", "token-usage-block"],
         )
 
     return Entry(
@@ -493,6 +494,7 @@ def convert_event_msg(record: dict, lineno: int) -> Entry:
         css_class="entry-system",
         raw_type=f"event_msg/{subtype or 'unknown'}",
         lineno=lineno,
+        extra_classes=["event-block"],
     )
 
 
@@ -1032,7 +1034,8 @@ BASE_CSS = """
     }
     header > .header-top,
     header > .session-switcher,
-    header > p {
+    header > p,
+    header > .visibility-controls-row {
       width: 100%;
       max-width: var(--page-max-width);
       margin-left: auto;
@@ -1056,6 +1059,31 @@ BASE_CSS = """
       display: flex;
       gap: 0.5rem;
       flex-wrap: wrap;
+    }
+    .visibility-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.8rem;
+      padding: 0.35rem 0.75rem;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .visibility-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.86rem;
+      color: #edf3ff;
+      user-select: none;
+      cursor: pointer;
+    }
+    .visibility-toggle input {
+      margin: 0;
+      accent-color: #ffc107;
+    }
+    .visibility-controls-row {
+      margin-top: 0.55rem;
     }
     .session-switcher {
       display: flex;
@@ -1237,6 +1265,12 @@ BASE_CSS = """
     }
     .nav-button:hover {
       background: #0b5ed7;
+    }
+    body.events-hidden .entry.event-block {
+      display: none;
+    }
+    body.token-usage-hidden .entry.token-usage-block {
+      display: none;
     }
     body.meta-hidden .entry.collapsible-meta {
       display: none;
@@ -1545,6 +1579,18 @@ def build_page(
     </div>
     {session_selector_html}
     <p>Source: {html.escape(active_session.rel_path)} · {total} entries · {html.escape(active_session.time_label)}</p>
+    <div class="visibility-controls-row">
+      <div class="visibility-controls">
+        <label class="visibility-toggle">
+          <input id="toggle-events" type="checkbox">
+          <span>Event</span>
+        </label>
+        <label class="visibility-toggle">
+          <input id="toggle-token-usage" type="checkbox">
+          <span>Token usage</span>
+        </label>
+      </div>
+    </div>
   </header>
   {timeline_html}
   <div class="container" id="cards-container"></div>
@@ -1569,6 +1615,19 @@ def build_page(
         }}
       }};
       appendBatch();
+    }})();
+
+    (() => {{
+      const eventsToggle = document.getElementById("toggle-events");
+      const tokenToggle = document.getElementById("toggle-token-usage");
+      if (!eventsToggle || !tokenToggle) return;
+      const update = () => {{
+        document.body.classList.toggle("events-hidden", !eventsToggle.checked);
+        document.body.classList.toggle("token-usage-hidden", !tokenToggle.checked);
+      }};
+      eventsToggle.addEventListener("change", update);
+      tokenToggle.addEventListener("change", update);
+      update();
     }})();
 
     (() => {{
