@@ -31,7 +31,8 @@ This writes a single HTML file (or `index.html` inside the output directory).
 
 | Flag | Description |
 | ---- | ----------- |
-| `-l, --log` | Path to the JSONL log (required). |
+| `-l, --log` | Path to a single JSONL log (optional). |
+| `--sessions-dir` | Root folder to scan recursively for `*.jsonl` files when `--log` is not set (default: `~/.codex/sessions`). |
 | `-p, --port` | Port for the HTTP server (default `8000`). |
 | `-o, --output` | Write `index.html` output to this file or directory and exit. |
 

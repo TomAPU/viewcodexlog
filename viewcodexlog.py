@@ -14,6 +14,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
+from urllib.parse import parse_qs, quote, urlsplit
 
 
 @dataclass
@@ -47,7 +49,19 @@ class RunCodeUpload:
     flags: str
 
 
+@dataclass
+class SessionLog:
+    session_id: str
+    path: Path
+    rel_path: str
+    timestamp: str
+    time_label: str
+    title: str
+    summary: str
+
+
 TARGET_RUN_CODE_FN = "mcp__kernelmcp__vm_compile_c_and_upload"
+DEFAULT_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,8 +70,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-l",
         "--log",
-        required=True,
-        help="Path to the JSONL conversation log.",
+        help="Path to a single JSONL conversation log (optional).",
+    )
+    parser.add_argument(
+        "--sessions-dir",
+        default=str(DEFAULT_SESSIONS_DIR),
+        help="Directory to scan for JSONL session logs when --log is not set.",
     )
     parser.add_argument(
         "-p",
@@ -72,6 +90,192 @@ def parse_args() -> argparse.Namespace:
         help="Write HTML output to this file or directory instead of serving.",
     )
     return parser.parse_args()
+
+
+def parse_iso_timestamp_safe(value: object) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    try:
+        return parse_iso_timestamp(value)
+    except ValueError:
+        return None
+
+
+def session_time_from_filename(path: Path) -> Optional[str]:
+    match = re.search(r"rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-", path.name)
+    if not match:
+        return None
+    raw = match.group(1)
+    date_part, time_part = raw.split("T", 1)
+    return f"{date_part}T{time_part.replace('-', ':')}Z"
+
+
+def format_session_time_label(timestamp: str) -> str:
+    dt = parse_iso_timestamp_safe(timestamp)
+    if dt is None:
+        return timestamp or "unknown time"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def compact_text(text: object, limit: int = 96) -> str:
+    if text is None:
+        return ""
+    normalized = " ".join(str(text).strip().split())
+    if not normalized:
+        return ""
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "..."
+
+
+def is_session_bootstrap_text(text: str) -> bool:
+    lowered = text.lower()
+    noisy_markers = [
+        "agents.md instructions",
+        "<environment_context>",
+        "<collaboration_mode>",
+        "<permissions instructions>",
+        "## skills",
+        "how to use skills",
+    ]
+    return any(marker in lowered for marker in noisy_markers)
+
+
+def extract_first_user_prompt(payload: dict) -> str:
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    texts = extract_text_chunks(content)
+    if not texts:
+        return ""
+    return compact_text(texts[0], limit=120)
+
+
+def build_session_log(path: Path, root_dir: Path) -> Optional[SessionLog]:
+    timestamp = ""
+    title = ""
+    summary = ""
+    fallback_prompt = ""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for lineno, line in enumerate(handle, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not timestamp:
+                    rec_ts = record.get("timestamp")
+                    if isinstance(rec_ts, str):
+                        timestamp = rec_ts
+                rectype = record.get("type")
+                payload = record.get("payload") or {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                if rectype == "session_meta":
+                    payload_ts = payload.get("timestamp")
+                    if isinstance(payload_ts, str):
+                        timestamp = payload_ts if not timestamp else timestamp
+                    candidate_title = (
+                        payload.get("title")
+                        or payload.get("name")
+                        or payload.get("topic")
+                    )
+                    if isinstance(candidate_title, str) and candidate_title.strip():
+                        title = compact_text(candidate_title, limit=120)
+                    candidate_summary = payload.get("summary")
+                    if isinstance(candidate_summary, str) and candidate_summary.strip():
+                        summary = compact_text(candidate_summary, limit=120)
+                elif rectype == "response_item":
+                    if payload.get("type") == "message" and payload.get("role") == "user":
+                        prompt = extract_first_user_prompt(payload)
+                        if prompt:
+                            if not fallback_prompt:
+                                fallback_prompt = prompt
+                            if not is_session_bootstrap_text(prompt):
+                                summary = summary or prompt
+                                title = title or prompt
+                                break
+                elif rectype == "event_msg":
+                    if payload.get("type") == "user_message":
+                        message = compact_text(payload.get("message"), limit=120)
+                        if message:
+                            if not fallback_prompt:
+                                fallback_prompt = message
+                            if not is_session_bootstrap_text(message):
+                                summary = summary or message
+                                title = title or message
+                                break
+                if lineno >= 1200 and timestamp:
+                    break
+    except OSError:
+        return None
+
+    if not timestamp:
+        timestamp = session_time_from_filename(path) or ""
+    if not summary and fallback_prompt:
+        summary = fallback_prompt
+    if not title:
+        title = summary or path.stem
+    if not summary:
+        summary = title
+    try:
+        rel_path = str(path.relative_to(root_dir))
+    except ValueError:
+        rel_path = str(path)
+    session_id = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:16]
+    return SessionLog(
+        session_id=session_id,
+        path=path,
+        rel_path=rel_path,
+        timestamp=timestamp,
+        time_label=format_session_time_label(timestamp),
+        title=title,
+        summary=summary,
+    )
+
+
+def discover_session_logs(root_dir: Path) -> List[SessionLog]:
+    if not root_dir.exists():
+        return []
+    sessions: List[SessionLog] = []
+    for path in sorted(root_dir.rglob("*.jsonl")):
+        if not path.is_file():
+            continue
+        session = build_session_log(path.resolve(), root_dir)
+        if session:
+            sessions.append(session)
+
+    def sort_key(session: SessionLog) -> datetime:
+        dt = parse_iso_timestamp_safe(session.timestamp)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        try:
+            return datetime.fromtimestamp(session.path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return datetime.fromtimestamp(0, tz=timezone.utc)
+
+    sessions.sort(key=sort_key, reverse=True)
+    return sessions
+
+
+def resolve_session_or_default(
+    sessions: List[SessionLog], session_id: Optional[str]
+) -> Optional[SessionLog]:
+    if not sessions:
+        return None
+    if session_id:
+        for session in sessions:
+            if session.session_id == session_id:
+                return session
+    return sessions[0]
 
 
 def load_entries(path: Path) -> List[Entry]:
@@ -762,6 +966,46 @@ def render_tool_timeline(entries: List[Entry]) -> str:
   </script>
   """
 
+
+def render_session_selector(
+    sessions: List[SessionLog],
+    active_session: SessionLog,
+    target_path: str,
+) -> str:
+    if not sessions:
+        return ""
+    options = []
+    for session in sessions:
+        selected = " selected" if session.session_id == active_session.session_id else ""
+        label = compact_text(f"{session.time_label} | {session.title}", limit=150)
+        hint = compact_text(f"{session.summary} ({session.rel_path})", limit=220)
+        options.append(
+            f'<option value="{html.escape(session.session_id)}"{selected} '
+            f'title="{html.escape(hint)}">{html.escape(label)}</option>'
+        )
+    rel_label = html.escape(active_session.rel_path)
+    return f"""
+    <div class="session-switcher">
+      <label for="session-select">Session</label>
+      <select id="session-select" data-target="{html.escape(target_path)}">
+        {"\n".join(options)}
+      </select>
+      <small class="session-path">{rel_label}</small>
+    </div>
+    <script>
+      (() => {{
+        const select = document.getElementById("session-select");
+        if (!select) return;
+        const targetPath = select.dataset.target || "/index.html";
+        select.addEventListener("change", () => {{
+          const sid = encodeURIComponent(select.value);
+          window.location.href = `${{targetPath}}?sid=${{sid}}`;
+        }});
+      }})();
+    </script>
+    """
+
+
 BASE_CSS = """
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -785,6 +1029,31 @@ BASE_CSS = """
       display: flex;
       gap: 0.5rem;
       flex-wrap: wrap;
+    }
+    .session-switcher {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      flex-wrap: wrap;
+      margin-top: 0.65rem;
+    }
+    .session-switcher label {
+      font-weight: 600;
+      font-size: 0.92rem;
+    }
+    .session-switcher select {
+      min-width: min(100%, 640px);
+      max-width: 100%;
+      border-radius: 7px;
+      border: 1px solid #cfd7e3;
+      padding: 0.4rem 0.55rem;
+      font-size: 0.9rem;
+      background: white;
+      color: #1c1c1c;
+    }
+    .session-switcher .session-path {
+      color: #b7c0cf;
+      font-size: 0.8rem;
     }
     .container {
       padding: 1rem 2rem 3rem;
@@ -1181,7 +1450,12 @@ BASE_CSS = """
 """
 
 
-def build_page(entries: List[Entry], source_path: Path) -> str:
+def build_page(
+    entries: List[Entry],
+    source_path: Path,
+    sessions: List[SessionLog],
+    active_session: SessionLog,
+) -> str:
     next_for_tool: dict[str, Optional[str]] = {}
     for entry in reversed(entries):
         if entry.tool_name and entry.anchor_id:
@@ -1191,6 +1465,9 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
     total = len(entries)
     timeline_html = render_tool_timeline(entries)
     cards_json = json.dumps(card_fragments).replace("</", "<\\/")
+    session_selector_html = render_session_selector(
+        sessions, active_session, "/index.html")
+    run_code_href = f"/run_code_log.html?sid={quote(active_session.session_id, safe='')}"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1205,11 +1482,12 @@ def build_page(entries: List[Entry], source_path: Path) -> str:
     <div class="header-top">
       <h1>Conversation Viewer</h1>
       <div class="header-actions">
-        <a href="/run_code_log.html" class="nav-button">View run_code uploads</a>
+        <a href="{run_code_href}" class="nav-button">View run_code uploads</a>
         <button id="toggle-meta" class="meta-toggle" type="button">Hide meta blocks</button>
       </div>
     </div>
-    <p>Source: {html.escape(str(source_path))} · {total} entries</p>
+    {session_selector_html}
+    <p>Source: {html.escape(active_session.rel_path)} · {total} entries · {html.escape(active_session.time_label)}</p>
   </header>
   {timeline_html}
   <div class="container" id="cards-container"></div>
@@ -1283,7 +1561,11 @@ def entry_to_html(entry: Entry) -> str:
     )
 
 
-def build_run_code_page(source_path: Path) -> str:
+def build_run_code_page(
+    source_path: Path,
+    sessions: List[SessionLog],
+    active_session: SessionLog,
+) -> str:
     uploads = extract_run_code_uploads(source_path)
     total = len(uploads)
     summary_section = render_upload_summary(uploads)
@@ -1306,6 +1588,9 @@ def build_run_code_page(source_path: Path) -> str:
             diffs_section = f"<section class='panel'><h2>Commit diffs</h2>{diff_cards}</section>"
     else:
         diffs_section = ""
+    session_selector_html = render_session_selector(
+        sessions, active_session, "/run_code_log.html")
+    back_href = f"/index.html?sid={quote(active_session.session_id, safe='')}"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1321,10 +1606,11 @@ def build_run_code_page(source_path: Path) -> str:
     <div class="header-top">
       <h1>run_code uploads</h1>
       <div class="header-actions">
-        <a href="/index.html" class="nav-button secondary">Back to entries</a>
+        <a href="{back_href}" class="nav-button secondary">Back to entries</a>
       </div>
     </div>
-    <p>Source: {html.escape(str(source_path))} · {total} uploads</p>
+    {session_selector_html}
+    <p>Source: {html.escape(active_session.rel_path)} · {total} uploads · {html.escape(active_session.time_label)}</p>
   </header>
   <div class="container">
     {summary_section}
@@ -1472,19 +1758,28 @@ def run_git_command(args: List[str], cwd: Path, env: dict) -> str:
 
 def start_server(
     port: int,
-    index_builder: Callable[[], str],
-    run_code_builder: Callable[[], str],
+    sessions: List[SessionLog],
+    index_builder: Callable[[SessionLog], str],
+    run_code_builder: Callable[[SessionLog], str],
 ) -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path in {"/", "/index.html"}:
+            parsed = urlsplit(self.path)
+            path = parsed.path or "/"
+            params = parse_qs(parsed.query)
+            requested_sid = params.get("sid", [None])[0]
+            session = resolve_session_or_default(sessions, requested_sid)
+            if session is None:
+                self.send_error(500, "No session logs available")
+                return
+            if path in {"/", "/index.html"}:
                 body_builder = index_builder
-            elif self.path == "/run_code_log.html":
+            elif path == "/run_code_log.html":
                 body_builder = run_code_builder
             else:
                 self.send_error(404, "Not Found")
                 return
-            body = body_builder().encode("utf-8")
+            body = body_builder(session).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1515,28 +1810,57 @@ def write_html_output(output_path: Path, index_html: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    source_path = Path(args.log).expanduser().resolve()
-    if not source_path.exists():
-        print(f"Log file not found: {source_path}", file=sys.stderr)
-        sys.exit(1)
+    sessions: List[SessionLog] = []
+    if args.log:
+        source_path = Path(args.log).expanduser().resolve()
+        if not source_path.exists():
+            print(f"Log file not found: {source_path}", file=sys.stderr)
+            sys.exit(1)
+        session = build_session_log(source_path, source_path.parent)
+        if session is None:
+            timestamp = session_time_from_filename(source_path) or ""
+            session = SessionLog(
+                session_id=hashlib.sha1(str(source_path).encode("utf-8")).hexdigest()[:16],
+                path=source_path,
+                rel_path=source_path.name,
+                timestamp=timestamp,
+                time_label=format_session_time_label(timestamp),
+                title=source_path.stem,
+                summary=source_path.stem,
+            )
+        sessions = [session]
+    else:
+        sessions_dir = Path(args.sessions_dir).expanduser().resolve()
+        sessions = discover_session_logs(sessions_dir)
+        if not sessions:
+            print(
+                f"No JSONL logs were found under: {sessions_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    entries = load_entries(source_path)
-    if not entries:
-        print("No entries were parsed from the log.", file=sys.stderr)
-        sys.exit(1)
-
-    def page_builder() -> str:
-        return build_page(entries, source_path)
+    selected = sessions[0]
 
     if args.output:
         output_path = Path(args.output).expanduser().resolve()
-        write_html_output(output_path, page_builder())
+        entries = load_entries(selected.path)
+        if not entries:
+            print(f"No entries were parsed from: {selected.path}", file=sys.stderr)
+            sys.exit(1)
+        write_html_output(
+            output_path,
+            build_page(entries, selected.path, [selected], selected),
+        )
         return
 
-    def run_code_builder() -> str:
-        return build_run_code_page(source_path)
+    def page_builder(session: SessionLog) -> str:
+        entries = load_entries(session.path)
+        return build_page(entries, session.path, sessions, session)
 
-    start_server(args.port, page_builder, run_code_builder)
+    def run_code_builder(session: SessionLog) -> str:
+        return build_run_code_page(session.path, sessions, session)
+
+    start_server(args.port, sessions, page_builder, run_code_builder)
 
 
 if __name__ == "__main__":
