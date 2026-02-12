@@ -255,20 +255,20 @@ def discover_session_logs(root_dir: Path) -> List[SessionLog]:
         session = build_session_log(path.resolve(), root_dir)
         if session:
             sessions.append(session)
-
-    def sort_key(session: SessionLog) -> datetime:
-        dt = parse_iso_timestamp_safe(session.timestamp)
-        if dt is not None:
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-        try:
-            return datetime.fromtimestamp(session.path.stat().st_mtime, tz=timezone.utc)
-        except OSError:
-            return datetime.fromtimestamp(0, tz=timezone.utc)
-
-    sessions.sort(key=sort_key, reverse=True)
+    sessions.sort(key=session_sort_key, reverse=True)
     return sessions
+
+
+def session_sort_key(session: SessionLog) -> datetime:
+    dt = parse_iso_timestamp_safe(session.timestamp)
+    if dt is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(session.path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
 
 
 def resolve_session_or_default(
@@ -984,33 +984,68 @@ def render_session_selector(
 ) -> str:
     if not sessions:
         return ""
-    options = []
-    for session in sessions:
-        selected = " selected" if session.session_id == active_session.session_id else ""
-        label = compact_text(f"{session.time_label} | {session.title}", limit=150)
-        hint = compact_text(f"{session.summary} ({session.rel_path})", limit=220)
-        options.append(
-            f'<option value="{html.escape(session.session_id)}"{selected} '
-            f'title="{html.escape(hint)}">{html.escape(label)}</option>'
+    ordered_sessions = sorted(sessions, key=session_sort_key, reverse=True)
+    items = []
+    for session in ordered_sessions:
+        active_class = " is-active" if session.session_id == active_session.session_id else ""
+        href = f"{target_path}?sid={quote(session.session_id, safe='')}"
+        title = compact_text(f"{session.time_label} | {session.title}", limit=180)
+        meta = compact_text(f"{session.summary} · {session.rel_path}", limit=280)
+        search_blob = " ".join(
+            [
+                session.time_label,
+                session.title,
+                session.summary,
+                session.rel_path,
+            ]
+        ).lower()
+        items.append(
+            f'<li class="session-item{active_class}" data-search="{html.escape(search_blob)}">'
+            f'<a href="{html.escape(href)}" class="session-link">'
+            f'<div class="session-title">{html.escape(title)}</div>'
+            f'<div class="session-meta">{html.escape(meta)}</div>'
+            f"</a>"
+            f"</li>"
         )
     rel_label = html.escape(active_session.rel_path)
     return f"""
     <div class="session-switcher">
-      <label for="session-select">Session</label>
-      <select id="session-select" data-target="{html.escape(target_path)}">
-        {"\n".join(options)}
-      </select>
-      <small class="session-path">{rel_label}</small>
+      <label for="session-search">Search sessions</label>
+      <input id="session-search" class="session-search-input" type="search" placeholder="Search by title, summary, path">
+      <small id="session-search-status" class="session-path"></small>
+      <ul id="session-list" class="session-list">
+        {"\n".join(items)}
+      </ul>
+      <small class="session-path">Current: {rel_label}</small>
     </div>
     <script>
       (() => {{
-        const select = document.getElementById("session-select");
-        if (!select) return;
-        const targetPath = select.dataset.target || "/index.html";
-        select.addEventListener("change", () => {{
-          const sid = encodeURIComponent(select.value);
-          window.location.href = `${{targetPath}}?sid=${{sid}}`;
+        const input = document.getElementById("session-search");
+        const list = document.getElementById("session-list");
+        const status = document.getElementById("session-search-status");
+        if (!input || !list || !status) return;
+        const items = Array.from(list.querySelectorAll(".session-item"));
+        const applyFilter = () => {{
+          const query = input.value.trim().toLowerCase();
+          let visible = 0;
+          items.forEach((item) => {{
+            const text = item.dataset.search || "";
+            const hit = !query || text.includes(query);
+            item.classList.toggle("hidden", !hit);
+            if (hit) visible += 1;
+          }});
+          status.textContent = query
+            ? `${{visible}} / ${{items.length}} sessions`
+            : `${{items.length}} sessions`;
+        }};
+        input.addEventListener("input", applyFilter);
+        input.addEventListener("keydown", (event) => {{
+          if (event.key === "Escape") {{
+            input.value = "";
+            applyFilter();
+          }}
         }});
+        applyFilter();
       }})();
     </script>
     """
@@ -1093,16 +1128,17 @@ BASE_CSS = """
     }
     .session-switcher {
       display: flex;
-      align-items: center;
-      gap: 0.55rem;
-      flex-wrap: wrap;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.45rem;
       margin-top: 0.65rem;
     }
     .session-switcher label {
       font-weight: 600;
       font-size: 0.92rem;
+      color: #edf3ff;
     }
-    .session-switcher select {
+    .session-search-input {
       min-width: min(100%, 360px);
       width: min(100%, 760px);
       max-width: 100%;
@@ -1112,6 +1148,48 @@ BASE_CSS = """
       font-size: 0.9rem;
       background: white;
       color: #1c1c1c;
+    }
+    .session-list {
+      list-style: none;
+      margin: 0.15rem 0 0;
+      padding: 0;
+      width: min(100%, 1100px);
+      max-height: 230px;
+      overflow-y: auto;
+      border: 1px solid #445267;
+      border-radius: 8px;
+      background: rgba(10, 17, 29, 0.35);
+    }
+    .session-item.hidden {
+      display: none;
+    }
+    .session-item + .session-item {
+      border-top: 1px solid rgba(215, 222, 233, 0.18);
+    }
+    .session-link {
+      display: block;
+      padding: 0.5rem 0.65rem;
+      color: #edf3ff;
+      text-decoration: none;
+    }
+    .session-link:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .session-item.is-active .session-link {
+      background: rgba(13, 110, 253, 0.25);
+      border-left: 3px solid #6ea8fe;
+      padding-left: calc(0.65rem - 3px);
+    }
+    .session-title {
+      font-size: 0.88rem;
+      line-height: 1.35;
+      color: #f4f8ff;
+    }
+    .session-meta {
+      margin-top: 0.18rem;
+      font-size: 0.78rem;
+      color: #bec8d8;
+      line-height: 1.3;
     }
     .session-switcher .session-path {
       color: #b7c0cf;
