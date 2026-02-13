@@ -1061,6 +1061,23 @@ def third_user_message_index(entries: List[Entry]) -> Optional[int]:
     return None
 
 
+def prepare_entries_for_render(entries: List[Entry]) -> int:
+    collapse_cutoff = third_user_message_index(entries)
+    collapsed_count = 0
+    if collapse_cutoff is not None and collapse_cutoff > 0:
+        collapsed_count = collapse_cutoff
+        for entry in entries[:collapse_cutoff]:
+            if "pre-third-user" not in entry.extra_classes:
+                entry.extra_classes.append("pre-third-user")
+
+    next_for_tool: dict[str, Optional[str]] = {}
+    for entry in reversed(entries):
+        if entry.tool_name and entry.anchor_id:
+            entry.next_tool_anchor = next_for_tool.get(entry.tool_name)
+            next_for_tool[entry.tool_name] = entry.anchor_id
+    return collapsed_count
+
+
 BASE_CSS = """
     :root {
       --page-max-width: 1680px;
@@ -1648,26 +1665,16 @@ def build_page(
     sessions: List[SessionLog],
     active_session: SessionLog,
 ) -> str:
-    collapse_cutoff = third_user_message_index(entries)
-    collapsed_count = 0
-    if collapse_cutoff is not None and collapse_cutoff > 0:
-        collapsed_count = collapse_cutoff
-        for entry in entries[:collapse_cutoff]:
-            if "pre-third-user" not in entry.extra_classes:
-                entry.extra_classes.append("pre-third-user")
-
-    next_for_tool: dict[str, Optional[str]] = {}
-    for entry in reversed(entries):
-        if entry.tool_name and entry.anchor_id:
-            entry.next_tool_anchor = next_for_tool.get(entry.tool_name)
-            next_for_tool[entry.tool_name] = entry.anchor_id
+    collapsed_count = prepare_entries_for_render(entries)
     card_fragments = [entry_to_html(entry) for entry in entries]
     total = len(entries)
+    max_lineno = entries[-1].lineno if entries else 0
     timeline_html = render_tool_timeline(entries)
     cards_json = json.dumps(card_fragments).replace("</", "<\\/")
     session_selector_html = render_session_selector(
         sessions, active_session, "/index.html")
     run_code_href = f"/run_code_log.html?sid={quote(active_session.session_id, safe='')}"
+    escaped_sid = html.escape(active_session.session_id)
     body_class_attr = ' class="prefix-collapsed"' if collapsed_count else ""
     fold_controls_html = ""
     if collapsed_count:
@@ -1699,7 +1706,7 @@ def build_page(
       </div>
     </div>
     {session_selector_html}
-    <p>Source: {html.escape(active_session.rel_path)} · {total} entries · {html.escape(active_session.time_label)}</p>
+    <p>Source: {html.escape(active_session.rel_path)} · <span id="entry-total">{total}</span> entries · {html.escape(active_session.time_label)}</p>
     <div class="visibility-controls-row">
       <div class="visibility-controls">
         <label class="visibility-toggle">
@@ -1718,25 +1725,90 @@ def build_page(
   <div class="container" id="cards-container"></div>
   <script>
     const cardFragments = {cards_json};
+    const activeSessionId = "{escaped_sid}";
+    let latestRenderedLine = {max_lineno};
+    let initialRenderDone = false;
     (() => {{
       const container = document.getElementById("cards-container");
       if (!container) return;
+      const entryTotal = document.getElementById("entry-total");
       const batchSize = 200;
       let index = 0;
+      const scheduleBatch = (cb) => {{
+        if (typeof window.requestIdleCallback === "function") {{
+          window.requestIdleCallback(cb);
+          return;
+        }}
+        setTimeout(cb, 0);
+      }};
+      const appendCards = (fragments) => {{
+        if (!Array.isArray(fragments) || fragments.length === 0) return;
+        const frag = document.createDocumentFragment();
+        fragments.forEach((item) => {{
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = item;
+          if (wrapper.firstElementChild) {{
+            frag.appendChild(wrapper.firstElementChild);
+          }}
+        }});
+        container.appendChild(frag);
+      }};
       const appendBatch = () => {{
         const limit = Math.min(index + batchSize, cardFragments.length);
-        const frag = document.createDocumentFragment();
+        const chunk = [];
         for (; index < limit; index++) {{
-          const wrapper = document.createElement("div");
-          wrapper.innerHTML = cardFragments[index];
-          frag.appendChild(wrapper.firstElementChild);
+          chunk.push(cardFragments[index]);
         }}
-        container.appendChild(frag);
+        appendCards(chunk);
+        if (entryTotal) {{
+          entryTotal.textContent = String(container.children.length);
+        }}
         if (index < cardFragments.length) {{
-          requestIdleCallback(appendBatch);
+          scheduleBatch(appendBatch);
+        }} else {{
+          initialRenderDone = true;
         }}
       }};
       appendBatch();
+
+      const pollForNewEntries = async () => {{
+        if (!initialRenderDone) {{
+          setTimeout(pollForNewEntries, 500);
+          return;
+        }}
+        const params = new URLSearchParams();
+        if (activeSessionId) {{
+          params.set("sid", activeSessionId);
+        }}
+        params.set("since", String(latestRenderedLine));
+        try {{
+          const response = await fetch(`/api/entries?${{params.toString()}}`, {{
+            cache: "no-store",
+          }});
+          if (!response.ok) {{
+            setTimeout(pollForNewEntries, 2000);
+            return;
+          }}
+          const payload = await response.json();
+          if (payload && payload.reset) {{
+            location.reload();
+            return;
+          }}
+          if (payload && Array.isArray(payload.fragments) && payload.fragments.length > 0) {{
+            appendCards(payload.fragments);
+            if (entryTotal) {{
+              entryTotal.textContent = String(container.children.length);
+            }}
+          }}
+          if (payload && typeof payload.max_lineno === "number") {{
+            latestRenderedLine = Math.max(latestRenderedLine, payload.max_lineno);
+          }}
+        }} catch (_err) {{
+          // Ignore transient polling errors.
+        }}
+        setTimeout(pollForNewEntries, 2000);
+      }};
+      setTimeout(pollForNewEntries, 2000);
     }})();
 
     (() => {{
@@ -2027,6 +2099,35 @@ def start_server(
             session = resolve_session_or_default(sessions, requested_sid)
             if session is None:
                 self.send_error(500, "No session logs available")
+                return
+            if path == "/api/entries":
+                since_raw = params.get("since", ["0"])[0]
+                try:
+                    since_lineno = max(0, int(since_raw))
+                except (TypeError, ValueError):
+                    self.send_error(400, "Invalid 'since' parameter")
+                    return
+
+                entries = load_entries(session.path)
+                prepare_entries_for_render(entries)
+                max_lineno = entries[-1].lineno if entries else 0
+                reset = since_lineno > max_lineno
+                new_entries: List[Entry] = []
+                if not reset:
+                    new_entries = [entry for entry in entries if entry.lineno > since_lineno]
+
+                payload = {
+                    "fragments": [entry_to_html(entry) for entry in new_entries],
+                    "max_lineno": max_lineno,
+                    "reset": reset,
+                }
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if path in {"/", "/index.html"}:
                 body_builder = index_builder
