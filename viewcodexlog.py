@@ -2013,9 +2013,9 @@ def run_git_command(args: List[str], cwd: Path, env: dict) -> str:
 
 def start_server(
     port: int,
-    sessions: List[SessionLog],
-    index_builder: Callable[[SessionLog], str],
-    run_code_builder: Callable[[SessionLog], str],
+    sessions_provider: Callable[[], List[SessionLog]],
+    index_builder: Callable[[List[SessionLog], SessionLog], str],
+    run_code_builder: Callable[[List[SessionLog], SessionLog], str],
 ) -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -2023,6 +2023,7 @@ def start_server(
             path = parsed.path or "/"
             params = parse_qs(parsed.query)
             requested_sid = params.get("sid", [None])[0]
+            sessions = sessions_provider()
             session = resolve_session_or_default(sessions, requested_sid)
             if session is None:
                 self.send_error(500, "No session logs available")
@@ -2034,7 +2035,7 @@ def start_server(
             else:
                 self.send_error(404, "Not Found")
                 return
-            body = body_builder(session).encode("utf-8")
+            body = body_builder(sessions, session).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -2065,7 +2066,8 @@ def write_html_output(output_path: Path, index_html: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    sessions: List[SessionLog] = []
+    selected: Optional[SessionLog] = None
+    sessions_provider: Callable[[], List[SessionLog]]
     if args.log:
         source_path = Path(args.log).expanduser().resolve()
         if not source_path.exists():
@@ -2083,18 +2085,25 @@ def main() -> None:
                 title=source_path.stem,
                 summary=source_path.stem,
             )
-        sessions = [session]
+        selected = session
+        sessions_provider = lambda: [session]
     else:
         sessions_dir = Path(args.sessions_dir).expanduser().resolve()
-        sessions = discover_session_logs(sessions_dir)
-        if not sessions:
+        initial_sessions = discover_session_logs(sessions_dir)
+        if not initial_sessions:
             print(
                 f"No JSONL logs were found under: {sessions_dir}",
                 file=sys.stderr,
             )
             sys.exit(1)
+        selected = initial_sessions[0]
 
-    selected = sessions[0]
+        def sessions_provider() -> List[SessionLog]:
+            return discover_session_logs(sessions_dir)
+
+    if selected is None:
+        print("No session was selected", file=sys.stderr)
+        sys.exit(1)
 
     if args.output:
         output_path = Path(args.output).expanduser().resolve()
@@ -2108,14 +2117,14 @@ def main() -> None:
         )
         return
 
-    def page_builder(session: SessionLog) -> str:
+    def page_builder(sessions: List[SessionLog], session: SessionLog) -> str:
         entries = load_entries(session.path)
         return build_page(entries, session.path, sessions, session)
 
-    def run_code_builder(session: SessionLog) -> str:
+    def run_code_builder(sessions: List[SessionLog], session: SessionLog) -> str:
         return build_run_code_page(session.path, sessions, session)
 
-    start_server(args.port, sessions, page_builder, run_code_builder)
+    start_server(args.port, sessions_provider, page_builder, run_code_builder)
 
 
 if __name__ == "__main__":
