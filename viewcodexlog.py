@@ -1051,6 +1051,16 @@ def render_session_selector(
     """
 
 
+def third_user_message_index(entries: List[Entry]) -> Optional[int]:
+    seen = 0
+    for idx, entry in enumerate(entries):
+        if entry.raw_type == "response_item/message" and entry.label == "Message · user":
+            seen += 1
+            if seen == 3:
+                return idx
+    return None
+
+
 BASE_CSS = """
     :root {
       --page-max-width: 1680px;
@@ -1076,7 +1086,8 @@ BASE_CSS = """
     header > .header-top,
     header > .session-switcher,
     header > p,
-    header > .visibility-controls-row {
+    header > .visibility-controls-row,
+    header > .fold-controls-row {
       width: 100%;
       max-width: var(--page-max-width);
       margin-left: auto;
@@ -1125,6 +1136,9 @@ BASE_CSS = """
     }
     .visibility-controls-row {
       margin-top: 0.55rem;
+    }
+    .fold-controls-row {
+      margin-top: 0.45rem;
     }
     .session-switcher {
       display: flex;
@@ -1357,6 +1371,9 @@ BASE_CSS = """
       display: none;
     }
     body.meta-hidden .entry.collapsible-meta {
+      display: none;
+    }
+    body.prefix-collapsed .entry.pre-third-user {
       display: none;
     }
     .panel {
@@ -1631,6 +1648,14 @@ def build_page(
     sessions: List[SessionLog],
     active_session: SessionLog,
 ) -> str:
+    collapse_cutoff = third_user_message_index(entries)
+    collapsed_count = 0
+    if collapse_cutoff is not None and collapse_cutoff > 0:
+        collapsed_count = collapse_cutoff
+        for entry in entries[:collapse_cutoff]:
+            if "pre-third-user" not in entry.extra_classes:
+                entry.extra_classes.append("pre-third-user")
+
     next_for_tool: dict[str, Optional[str]] = {}
     for entry in reversed(entries):
         if entry.tool_name and entry.anchor_id:
@@ -1643,6 +1668,18 @@ def build_page(
     session_selector_html = render_session_selector(
         sessions, active_session, "/index.html")
     run_code_href = f"/run_code_log.html?sid={quote(active_session.session_id, safe='')}"
+    body_class_attr = ' class="prefix-collapsed"' if collapsed_count else ""
+    fold_controls_html = ""
+    if collapsed_count:
+        fold_controls_html = (
+            '<div class="fold-controls-row">'
+            f'<button id="toggle-prefix" class="meta-toggle" type="button" '
+            f'data-collapsed-text="Unfold earlier conversation ({collapsed_count} entries)" '
+            'data-expanded-text="Fold earlier conversation">'
+            f"Unfold earlier conversation ({collapsed_count} entries)"
+            "</button>"
+            "</div>"
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1652,7 +1689,7 @@ def build_page(
 {BASE_CSS}
   </style>
 </head>
-<body>
+<body{body_class_attr}>
   <header>
     <div class="header-top">
       <h1>Conversation Viewer</h1>
@@ -1675,6 +1712,7 @@ def build_page(
         </label>
       </div>
     </div>
+    {fold_controls_html}
   </header>
   {timeline_html}
   <div class="container" id="cards-container"></div>
@@ -1724,6 +1762,23 @@ def build_page(
       }};
       btn.addEventListener("click", () => {{
         hidden = !hidden;
+        update();
+      }});
+      update();
+    }})();
+
+    (() => {{
+      const btn = document.getElementById("toggle-prefix");
+      if (!btn) return;
+      let collapsed = document.body.classList.contains("prefix-collapsed");
+      const collapsedText = btn.dataset.collapsedText || "Unfold earlier conversation";
+      const expandedText = btn.dataset.expandedText || "Fold earlier conversation";
+      const update = () => {{
+        document.body.classList.toggle("prefix-collapsed", collapsed);
+        btn.textContent = collapsed ? collapsedText : expandedText;
+      }};
+      btn.addEventListener("click", () => {{
+        collapsed = !collapsed;
         update();
       }});
       update();
