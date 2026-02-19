@@ -363,7 +363,7 @@ def convert_record(record: dict, lineno: int) -> Optional[Entry]:
             css_class="entry-system",
             raw_type=rectype,
             lineno=lineno,
-            extra_classes=["collapsible-meta"],
+            extra_classes=["collapsible-meta", "turn-context-block"],
         )
 
     if rectype == "response_item":
@@ -475,7 +475,7 @@ def convert_response_item(record: dict, lineno: int) -> Optional[Entry]:
             css_class="entry-assistant",
             raw_type="response_item/reasoning",
             lineno=lineno,
-            extra_classes=["collapsible-meta"],
+            extra_classes=["collapsible-meta", "summary-block"],
         )
 
     return Entry(
@@ -1775,8 +1775,11 @@ BASE_CSS = """
     /* Hiding logic */
     body.events-hidden .entry.event-block { display: none; }
     body.token-usage-hidden .entry.token-usage-block { display: none; }
+    body.turn-context-hidden .entry.turn-context-block { display: none; }
     body.meta-hidden .entry.collapsible-meta { display: none; }
     body.prefix-collapsed .entry.pre-third-user { display: none; }
+    body.summary-only .entry { display: none; }
+    body.summary-only .entry.summary-block { display: block; }
 """
 
 
@@ -1837,6 +1840,12 @@ def build_page(
           </label>
           <label style="font-size:0.85rem; color:var(--text-secondary); display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
             <input id="toggle-token-usage" type="checkbox"> Show Tokens
+          </label>
+          <label style="font-size:0.85rem; color:var(--text-secondary); display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+            <input id="toggle-turn-context" type="checkbox"> Show Turn Context
+          </label>
+          <label style="font-size:0.85rem; color:var(--text-secondary); display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+            <input id="toggle-summary-only" type="checkbox"> 只看 Summary
           </label>
        </div>
        
@@ -2004,13 +2013,19 @@ def build_page(
     (() => {{
       const eventsToggle = document.getElementById("toggle-events");
       const tokenToggle = document.getElementById("toggle-token-usage");
-      if (!eventsToggle || !tokenToggle) return;
+      const turnContextToggle = document.getElementById("toggle-turn-context");
+      const summaryOnlyToggle = document.getElementById("toggle-summary-only");
+      if (!eventsToggle || !tokenToggle || !turnContextToggle || !summaryOnlyToggle) return;
       const update = () => {{
         document.body.classList.toggle("events-hidden", !eventsToggle.checked);
         document.body.classList.toggle("token-usage-hidden", !tokenToggle.checked);
+        document.body.classList.toggle("turn-context-hidden", !turnContextToggle.checked);
+        document.body.classList.toggle("summary-only", summaryOnlyToggle.checked);
       }};
       eventsToggle.addEventListener("change", update);
       tokenToggle.addEventListener("change", update);
+      turnContextToggle.addEventListener("change", update);
+      summaryOnlyToggle.addEventListener("change", update);
       update();
     }})();
 
