@@ -1832,7 +1832,7 @@ def build_page(
     {session_selector_html}
 
     <div class="controls-row">
-       <input type="text" id="entry-search" placeholder="Filter entries..." style="width: 300px;">
+       <input type="text" id="entry-search" placeholder="Filter entries..." style="width: 300px;" autocomplete="off">
        
        <div style="margin-left:auto; display:flex; gap:1rem; align-items:center;">
           <label style="font-size:0.85rem; color:var(--text-secondary); display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
@@ -1863,23 +1863,43 @@ def build_page(
     const activeSessionId = "{escaped_sid}";
     let latestRenderedLine = {max_lineno};
     let initialRenderDone = false;
+    const storage = (() => {{
+      try {{
+        return window.localStorage;
+      }} catch (_err) {{
+        return null;
+      }}
+    }})();
+    const readStorage = (key) => {{
+      if (!storage) return null;
+      try {{
+        return storage.getItem(key);
+      }} catch (_err) {{
+        return null;
+      }}
+    }};
+    const writeStorage = (key, value) => {{
+      if (!storage) return;
+      try {{
+        storage.setItem(key, value);
+      }} catch (_err) {{
+        // Ignore storage failures (e.g. private mode).
+      }}
+    }};
     
     // Theme logic
     (() => {{
       const btn = document.getElementById('toggle-theme');
       const body = document.body;
-      const savedTheme = localStorage.getItem('viewcodexlog-theme');
+      if (!body) return;
+      const savedTheme = readStorage('viewcodexlog-theme');
       
       const setTheme = (theme) => {{
-        if (theme === 'light') {{
-          body.classList.add('theme-light');
-        }} else {{
-          body.classList.remove('theme-light');
-        }}
-        localStorage.setItem('viewcodexlog-theme', theme);
+        body.classList.toggle('theme-light', theme === 'light');
+        writeStorage('viewcodexlog-theme', theme);
       }};
 
-      if (savedTheme) {{
+      if (savedTheme === 'light' || savedTheme === 'dark') {{
         setTheme(savedTheme);
       }}
 
@@ -1905,6 +1925,7 @@ def build_page(
     (() => {{
       const input = document.getElementById('entry-search');
       if(!input) return;
+      input.value = "";
       input.addEventListener('input', (e) => {{
         const term = e.target.value.toLowerCase();
         document.querySelectorAll('.entry').forEach(entry => {{
@@ -2016,6 +2037,10 @@ def build_page(
       const turnContextToggle = document.getElementById("toggle-turn-context");
       const summaryOnlyToggle = document.getElementById("toggle-summary-only");
       if (!eventsToggle || !tokenToggle || !turnContextToggle || !summaryOnlyToggle) return;
+      eventsToggle.checked = false;
+      tokenToggle.checked = false;
+      turnContextToggle.checked = false;
+      summaryOnlyToggle.checked = false;
       const update = () => {{
         document.body.classList.toggle("events-hidden", !eventsToggle.checked);
         document.body.classList.toggle("token-usage-hidden", !tokenToggle.checked);
@@ -2145,6 +2170,7 @@ def build_run_code_page(
     <div class="header-top">
       <h1>run_code uploads</h1>
       <div class="header-actions">
+        <button id="toggle-theme" class="meta-toggle" type="button">Theme</button>
         <a href="{back_href}" class="nav-button secondary">Back to entries</a>
       </div>
     </div>
@@ -2155,6 +2181,48 @@ def build_run_code_page(
     {summary_section}
     {diffs_section}
   </div>
+  <script>
+    (() => {{
+      const body = document.body;
+      if (!body) return;
+      const storage = (() => {{
+        try {{
+          return window.localStorage;
+        }} catch (_err) {{
+          return null;
+        }}
+      }})();
+      const readStorage = (key) => {{
+        if (!storage) return null;
+        try {{
+          return storage.getItem(key);
+        }} catch (_err) {{
+          return null;
+        }}
+      }};
+      const writeStorage = (key, value) => {{
+        if (!storage) return;
+        try {{
+          storage.setItem(key, value);
+        }} catch (_err) {{
+          // Ignore storage failures (e.g. private mode).
+        }}
+      }};
+      const setTheme = (theme) => {{
+        body.classList.toggle('theme-light', theme === 'light');
+        writeStorage('viewcodexlog-theme', theme);
+      }};
+      const savedTheme = readStorage('viewcodexlog-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') {{
+        setTheme(savedTheme);
+      }}
+      const btn = document.getElementById('toggle-theme');
+      btn?.addEventListener('click', () => {{
+        const isLight = body.classList.contains('theme-light');
+        setTheme(isLight ? 'dark' : 'light');
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
