@@ -1175,7 +1175,7 @@ BASE_CSS = """
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
     }
 
-    body.theme-light {
+    :root.theme-light {
       /* Light Theme Override */
       --bg-app: #f6f8fa;
       --bg-panel: #ffffff;
@@ -1814,6 +1814,19 @@ def build_page(
 <head>
   <meta charset="utf-8">
   <title>Conversation Viewer</title>
+  <script>
+    (() => {{
+      try {{
+        const storage = window.localStorage;
+        const theme = storage.getItem('viewcodexlog-theme');
+        if (theme === 'light' || theme === 'dark') {{
+          document.documentElement.classList.toggle('theme-light', theme === 'light');
+        }}
+      }} catch (_err) {{
+        // Ignore storage errors before render.
+      }}
+    }})();
+  </script>
   <style>
 {BASE_CSS}
   </style>
@@ -1890,12 +1903,12 @@ def build_page(
     // Theme logic
     (() => {{
       const btn = document.getElementById('toggle-theme');
-      const body = document.body;
-      if (!body) return;
+      const root = document.documentElement;
+      if (!root) return;
       const savedTheme = readStorage('viewcodexlog-theme');
       
       const setTheme = (theme) => {{
-        body.classList.toggle('theme-light', theme === 'light');
+        root.classList.toggle('theme-light', theme === 'light');
         writeStorage('viewcodexlog-theme', theme);
       }};
 
@@ -1904,7 +1917,7 @@ def build_page(
       }}
 
       btn?.addEventListener('click', () => {{
-        const isLight = body.classList.contains('theme-light');
+        const isLight = root.classList.contains('theme-light');
         setTheme(isLight ? 'dark' : 'light');
       }});
     }})();
@@ -2161,6 +2174,19 @@ def build_run_code_page(
 <head>
   <meta charset="utf-8">
   <title>run_code uploads</title>
+  <script>
+    (() => {{
+      try {{
+        const storage = window.localStorage;
+        const theme = storage.getItem('viewcodexlog-theme');
+        if (theme === 'light' || theme === 'dark') {{
+          document.documentElement.classList.toggle('theme-light', theme === 'light');
+        }}
+      }} catch (_err) {{
+        // Ignore storage errors before render.
+      }}
+    }})();
+  </script>
   <style>
 {BASE_CSS}
   </style>
@@ -2183,8 +2209,8 @@ def build_run_code_page(
   </div>
   <script>
     (() => {{
-      const body = document.body;
-      if (!body) return;
+      const root = document.documentElement;
+      if (!root) return;
       const storage = (() => {{
         try {{
           return window.localStorage;
@@ -2209,7 +2235,7 @@ def build_run_code_page(
         }}
       }};
       const setTheme = (theme) => {{
-        body.classList.toggle('theme-light', theme === 'light');
+        root.classList.toggle('theme-light', theme === 'light');
         writeStorage('viewcodexlog-theme', theme);
       }};
       const savedTheme = readStorage('viewcodexlog-theme');
@@ -2218,7 +2244,7 @@ def build_run_code_page(
       }}
       const btn = document.getElementById('toggle-theme');
       btn?.addEventListener('click', () => {{
-        const isLight = body.classList.contains('theme-light');
+        const isLight = root.classList.contains('theme-light');
         setTheme(isLight ? 'dark' : 'light');
       }});
     }})();
