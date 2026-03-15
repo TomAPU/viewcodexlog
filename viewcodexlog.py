@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple viewer for Codex CLI JSONL logs.
+Simple viewer for Codex and Claude CLI JSONL logs.
 
 Usage:
     python3 viewcodexlog.py -l <logfile.jsonl> -p <port>
@@ -95,55 +95,264 @@ def load_entries(path: Path) -> List[Entry]:
                     )
                 )
                 continue
-            entry = convert_record(record, lineno)
-            if entry:
-                entries.append(entry)
+            record_entries = convert_record(record, lineno)
+            if record_entries:
+                entries.extend(record_entries)
     return entries
 
 
-def convert_record(record: dict, lineno: int) -> Optional[Entry]:
+def convert_record(record: dict, lineno: int) -> List[Entry]:
     rectype = record.get("type", "unknown")
     timestamp = record.get("timestamp", "unknown")
     payload = record.get("payload", {})
 
     if rectype == "session_meta":
         body = format_payload(payload, collapsed=True)
-        return Entry(
-            timestamp=timestamp,
-            label="Session metadata",
-            body_html=body,
-            css_class="entry-system",
-            raw_type=rectype,
-            lineno=lineno,
-        )
+        return [
+            Entry(
+                timestamp=timestamp,
+                label="Session metadata",
+                body_html=body,
+                css_class="entry-system",
+                raw_type=rectype,
+                lineno=lineno,
+            )
+        ]
 
     if rectype == "turn_context":
         body = format_payload(payload, collapsed=True)
-        return Entry(
+        return [
+            Entry(
+                timestamp=timestamp,
+                label="Turn context",
+                body_html=body,
+                css_class="entry-system",
+                raw_type=rectype,
+                lineno=lineno,
+                extra_classes=["collapsible-meta"],
+            )
+        ]
+
+    if rectype == "response_item":
+        entry = convert_response_item(record, lineno)
+        return [entry] if entry else []
+
+    if rectype == "event_msg":
+        return [convert_event_msg(record, lineno)]
+
+    if rectype == "assistant":
+        return convert_claude_assistant_record(record, lineno)
+
+    if rectype == "user":
+        return convert_claude_user_record(record, lineno)
+
+    if rectype == "system":
+        return [convert_claude_system_record(record, lineno)]
+
+    if rectype == "progress":
+        return [convert_claude_progress_record(record, lineno)]
+
+    if rectype == "queue-operation":
+        return []
+
+    if rectype == "last-prompt":
+        return []
+
+    # Unknown type, display raw payload for debugging.
+    fallback_payload = payload if payload else record
+    fallback = format_payload(fallback_payload)
+    return [
+        Entry(
             timestamp=timestamp,
-            label="Turn context",
-            body_html=body,
+            label=f"Unhandled type: {rectype}",
+            body_html=fallback,
             css_class="entry-system",
             raw_type=rectype,
             lineno=lineno,
-            extra_classes=["collapsible-meta"],
+        )
+    ]
+
+
+def convert_claude_assistant_record(record: dict, lineno: int) -> List[Entry]:
+    payload = record.get("message") or {}
+    timestamp = record.get("timestamp", "unknown")
+    role = payload.get("role", "assistant")
+    entries: List[Entry] = []
+    tool_index = 0
+
+    for item in iter_claude_content_items(payload.get("content")):
+        subtype = item.get("type")
+        if subtype == "text":
+            text = item.get("text")
+            if text:
+                css = "entry-user" if role == "user" else "entry-assistant"
+                entries.append(
+                    Entry(
+                        timestamp=timestamp,
+                        label=f"Message · {role}",
+                        body_html=format_text_block(str(text)),
+                        css_class=css,
+                        raw_type="assistant/text",
+                        lineno=lineno,
+                    )
+                )
+            continue
+
+        if subtype == "tool_use":
+            tool_index += 1
+            name = item.get("name", "unknown")
+            call_id = item.get("id", "n/a")
+            parsed_args = try_parse_json(item.get("input"))
+            plan_html = render_plan_board(parsed_args) if name == "update_plan" else None
+            args_html = render_structured_data(parsed_args) if parsed_args is not None else ""
+            body = (
+                f"<div><strong>Call:</strong> {html.escape(str(name))}</div>"
+                f"<div><strong>call_id:</strong> {html.escape(str(call_id))}</div>"
+            )
+            if plan_html:
+                body += plan_html
+            if args_html:
+                body += args_html
+            entries.append(
+                Entry(
+                    timestamp=timestamp,
+                    label="Function call",
+                    body_html=body,
+                    css_class="entry-tool",
+                    raw_type="assistant/tool_use",
+                    lineno=lineno,
+                    anchor_id=f"entry-{lineno}-{tool_index}",
+                    tool_name=str(name),
+                )
+            )
+            continue
+
+        if subtype == "thinking":
+            entries.append(
+                Entry(
+                    timestamp=timestamp,
+                    label="Reasoning note",
+                    body_html="<em>Claude internal thinking omitted</em>",
+                    css_class="entry-assistant",
+                    raw_type="assistant/thinking",
+                    lineno=lineno,
+                    extra_classes=["collapsible-meta"],
+                )
+            )
+            continue
+
+        entries.append(
+            Entry(
+                timestamp=timestamp,
+                label=f"Assistant content ({subtype or 'unknown'})",
+                body_html=format_payload(item),
+                css_class="entry-system",
+                raw_type=f"assistant/{subtype or 'unknown'}",
+                lineno=lineno,
+            )
         )
 
-    if rectype == "response_item":
-        return convert_response_item(record, lineno)
+    return entries
 
-    if rectype == "event_msg":
-        return convert_event_msg(record, lineno)
 
-    # Unknown type, display raw payload for debugging.
-    fallback = format_payload(payload)
+def convert_claude_user_record(record: dict, lineno: int) -> List[Entry]:
+    payload = record.get("message") or {}
+    timestamp = record.get("timestamp", "unknown")
+    role = payload.get("role", "user")
+    content = payload.get("content")
+    entries: List[Entry] = []
+
+    if isinstance(content, str):
+        entries.append(
+            Entry(
+                timestamp=timestamp,
+                label=f"Message · {role}",
+                body_html=format_text_block(content),
+                css_class="entry-user",
+                raw_type="user/text",
+                lineno=lineno,
+            )
+        )
+        return entries
+
+    for item in iter_claude_content_items(content):
+        subtype = item.get("type")
+        if subtype == "tool_result":
+            call_id = item.get("tool_use_id", "n/a")
+            parsed_output = extract_claude_tool_result_output(record, item)
+            output_html = render_structured_data(parsed_output) if parsed_output is not None else "<em>no output</em>"
+            body = f"<div><strong>call_id:</strong> {html.escape(str(call_id))}</div>{output_html}"
+            entries.append(
+                Entry(
+                    timestamp=timestamp,
+                    label="Function output",
+                    body_html=body,
+                    css_class="entry-tool",
+                    raw_type="user/tool_result",
+                    lineno=lineno,
+                )
+            )
+            continue
+
+        text = item.get("text")
+        if text:
+            entries.append(
+                Entry(
+                    timestamp=timestamp,
+                    label=f"Message · {role}",
+                    body_html=format_text_block(str(text)),
+                    css_class="entry-user",
+                    raw_type="user/text",
+                    lineno=lineno,
+                )
+            )
+            continue
+
+        entries.append(
+            Entry(
+                timestamp=timestamp,
+                label=f"User content ({subtype or 'unknown'})",
+                body_html=format_payload(item),
+                css_class="entry-system",
+                raw_type=f"user/{subtype or 'unknown'}",
+                lineno=lineno,
+            )
+        )
+
+    return entries
+
+
+def convert_claude_system_record(record: dict, lineno: int) -> Entry:
+    timestamp = record.get("timestamp", "unknown")
+    subtype = record.get("subtype") or "system"
+    content = record.get("content")
+    body = format_text_block(str(content)) if content else format_payload(record, collapsed=True)
     return Entry(
         timestamp=timestamp,
-        label=f"Unhandled type: {rectype}",
-        body_html=fallback,
+        label=f"Event ({subtype})",
+        body_html=body,
         css_class="entry-system",
-        raw_type=rectype,
+        raw_type=f"system/{subtype}",
         lineno=lineno,
+        extra_classes=["collapsible-meta"],
+    )
+
+
+def convert_claude_progress_record(record: dict, lineno: int) -> Entry:
+    timestamp = record.get("timestamp", "unknown")
+    data = record.get("data")
+    subtype = None
+    if isinstance(data, dict):
+        subtype = data.get("type")
+    body = format_payload(data if data is not None else record, collapsed=True)
+    return Entry(
+        timestamp=timestamp,
+        label=f"Progress ({subtype or 'progress'})",
+        body_html=body,
+        css_class="entry-system",
+        raw_type=f"progress/{subtype or 'progress'}",
+        lineno=lineno,
+        extra_classes=["collapsible-meta"],
     )
 
 
@@ -327,7 +536,7 @@ def format_pre(text: str) -> str:
     return f"<pre>{html.escape(str(text))}</pre>"
 
 
-def format_payload(payload: dict, collapsed: bool = False) -> str:
+def format_payload(payload: object, collapsed: bool = False) -> str:
     pretty = json.dumps(payload, indent=2, ensure_ascii=False)
     escaped = html.escape(pretty)
     pre = f"<pre>{escaped}</pre>"
@@ -348,6 +557,34 @@ def try_parse_json(value: object) -> Optional[object]:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def iter_claude_content_items(value: object) -> Iterable[dict]:
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                yield item
+            else:
+                yield {"type": "text", "text": str(item)}
+        return
+
+    if value is None:
+        return
+
+    yield {"type": "text", "text": str(value)}
+
+
+def extract_claude_tool_result_output(record: dict, item: dict) -> Optional[object]:
+    mcp_meta = record.get("mcpMeta")
+    if isinstance(mcp_meta, dict) and "structuredContent" in mcp_meta:
+        return mcp_meta.get("structuredContent")
+    if "toolUseResult" in record:
+        parsed = try_parse_json(record.get("toolUseResult"))
+        return parsed if parsed is not None else record.get("toolUseResult")
+    parsed = try_parse_json(item.get("content"))
+    if parsed is not None:
+        return parsed
+    return item.get("content")
 
 
 def parse_iso_timestamp(value: str) -> datetime:
@@ -1386,17 +1623,34 @@ def extract_run_code_uploads(source_path: Path) -> List[RunCodeUpload]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if record.get("type") != "response_item":
-                continue
-            payload = record.get("payload") or {}
-            if payload.get("type") != "function_call":
-                continue
-            if payload.get("name") != TARGET_RUN_CODE_FN:
-                continue
-            args_raw = payload.get("arguments")
-            args = try_parse_json(args_raw)
+            rectype = record.get("type")
+            timestamp = record.get("timestamp", "unknown")
+
+            args: Optional[dict] = None
+            if rectype == "response_item":
+                payload = record.get("payload") or {}
+                if payload.get("type") != "function_call":
+                    continue
+                if payload.get("name") != TARGET_RUN_CODE_FN:
+                    continue
+                parsed = try_parse_json(payload.get("arguments"))
+                if isinstance(parsed, dict):
+                    args = parsed
+            elif rectype == "assistant":
+                message = record.get("message") or {}
+                for item in iter_claude_content_items(message.get("content")):
+                    if item.get("type") != "tool_use":
+                        continue
+                    if item.get("name") != TARGET_RUN_CODE_FN:
+                        continue
+                    parsed = try_parse_json(item.get("input"))
+                    if isinstance(parsed, dict):
+                        args = parsed
+                        break
+
             if not isinstance(args, dict):
                 continue
+
             code_value = args.get("code", "")
             code_str = str("" if code_value is None else code_value)
             flags_value = args.get("flags", "")
@@ -1407,7 +1661,7 @@ def extract_run_code_uploads(source_path: Path) -> List[RunCodeUpload]:
             uploads.append(
                 RunCodeUpload(
                     index=len(uploads) + 1,
-                    timestamp=record.get("timestamp", "unknown"),
+                    timestamp=timestamp,
                     lineno=lineno,
                     code=code_str,
                     flags=str(flags_str),
